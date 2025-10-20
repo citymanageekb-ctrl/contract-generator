@@ -1,6 +1,6 @@
 """
 Сити Менедж Снег - Генератор договоров
-Версия: 1.3 - С подробным логированием
+Версия: 1.4 - Исправлена инициализация БД
 """
 
 from flask import Flask, render_template, request, jsonify, send_file, session, redirect, url_for
@@ -90,44 +90,60 @@ CONTRACT_TYPES = {
 }
 
 def init_db():
-    conn = sqlite3.connect('contracts_history.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS contracts
-                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                  contract_type TEXT NOT NULL,
-                  user_data TEXT NOT NULL,
-                  generated_html TEXT NOT NULL,
-                  model_used TEXT NOT NULL,
-                  cost_estimate REAL,
-                  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
-    conn.commit()
-    conn.close()
+    """Инициализация базы данных"""
+    try:
+        conn = sqlite3.connect('contracts_history.db')
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS contracts
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      contract_type TEXT NOT NULL,
+                      user_data TEXT NOT NULL,
+                      generated_html TEXT NOT NULL,
+                      model_used TEXT NOT NULL,
+                      cost_estimate REAL,
+                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        conn.commit()
+        conn.close()
+        logger.info("База данных инициализирована")
+    except Exception as e:
+        logger.error(f"Ошибка инициализации БД: {e}")
 
 def save_to_history(contract_type, user_data, generated_html, model_used, cost_estimate):
-    conn = sqlite3.connect('contracts_history.db')
-    c = conn.cursor()
-    c.execute('''INSERT INTO contracts (contract_type, user_data, generated_html, model_used, cost_estimate)
-                 VALUES (?, ?, ?, ?, ?)''',
-              (contract_type, user_data, generated_html, model_used, cost_estimate))
-    conn.commit()
-    conn.close()
+    try:
+        conn = sqlite3.connect('contracts_history.db')
+        c = conn.cursor()
+        c.execute('''INSERT INTO contracts (contract_type, user_data, generated_html, model_used, cost_estimate)
+                     VALUES (?, ?, ?, ?, ?)''',
+                  (contract_type, user_data, generated_html, model_used, cost_estimate))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Ошибка сохранения в историю: {e}")
 
 def get_history(limit=50):
-    conn = sqlite3.connect('contracts_history.db')
-    c = conn.cursor()
-    c.execute('''SELECT id, contract_type, user_data, created_at, model_used, cost_estimate
-                 FROM contracts ORDER BY created_at DESC LIMIT ?''', (limit,))
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    try:
+        conn = sqlite3.connect('contracts_history.db')
+        c = conn.cursor()
+        c.execute('''SELECT id, contract_type, user_data, created_at, model_used, cost_estimate
+                     FROM contracts ORDER BY created_at DESC LIMIT ?''', (limit,))
+        rows = c.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.error(f"Ошибка получения истории: {e}")
+        return []
 
 def get_contract_by_id(contract_id):
-    conn = sqlite3.connect('contracts_history.db')
-    c = conn.cursor()
-    c.execute('SELECT * FROM contracts WHERE id = ?', (contract_id,))
-    row = c.fetchone()
-    conn.close()
-    return row
+    try:
+        conn = sqlite3.connect('contracts_history.db')
+        c = conn.cursor()
+        c.execute('SELECT * FROM contracts WHERE id = ?', (contract_id,))
+        row = c.fetchone()
+        conn.close()
+        return row
+    except Exception as e:
+        logger.error(f"Ошибка получения договора: {e}")
+        return None
 
 def login_required(f):
     @wraps(f)
@@ -206,10 +222,9 @@ def generate_contract():
             logger.error("Не указан тип договора или данные")
             return jsonify({'error': 'Не указан тип договора или данные'}), 400
 
-        # Проверка API ключа
         if not API_KEY or API_KEY == "":
             logger.error("API ключ не установлен!")
-            return jsonify({'error': 'API ключ Claude не настроен. Добавьте ANTHROPIC_API_KEY в переменные окружения Render.'}), 500
+            return jsonify({'error': 'API ключ Claude не настроен'}), 500
 
         logger.info(f"API ключ присутствует: {API_KEY[:20]}...")
 
@@ -221,7 +236,6 @@ def generate_contract():
             logger.error(f"Неизвестный тип договора: {contract_type}")
             return jsonify({'error': 'Неизвестный тип договора'}), 400
 
-        # Загрузка шаблонов
         logger.info("Загрузка шаблонов...")
         template_parts = []
         for part_file in contract_config['parts']:
@@ -244,10 +258,8 @@ def generate_contract():
         current_date = datetime.now().strftime('%d.%m.%Y')
         system_prompt = SYSTEM_PROMPT.format(current_date=current_date)
 
-        # Формирование контента
         content = []
 
-        # Файлы
         for i, file_data in enumerate(files_data):
             file_type = file_data.get('type', '')
             logger.info(f"Файл {i+1}: {file_type}")
@@ -271,7 +283,6 @@ def generate_contract():
                     }
                 })
 
-        # Шаблоны
         combined_template = '\n\n<!-- РАЗДЕЛИТЕЛЬ -->\n\n'.join(template_parts)
         
         user_message = f"""ЗАДАЧА: Заполни HTML-шаблон данными
@@ -288,7 +299,6 @@ def generate_contract():
 
         content.append({'type': 'text', 'text': user_message})
 
-        # Claude API
         logger.info("Отправка запроса к Claude API...")
         
         try:
@@ -307,7 +317,6 @@ def generate_contract():
             
             assistant_response = response.content[0].text
             logger.info(f"Длина ответа: {len(assistant_response)} символов")
-            logger.info(f"Первые 200 символов: {assistant_response[:200]}")
 
             input_tokens = response.usage.input_tokens
             output_tokens = response.usage.output_tokens
@@ -320,7 +329,6 @@ def generate_contract():
 
             logger.info(f"Стоимость: ${cost:.4f}")
 
-            # Проверка на JSON
             if assistant_response.strip().startswith('{'):
                 try:
                     json_data = json.loads(assistant_response)
@@ -336,7 +344,6 @@ def generate_contract():
                 except:
                     pass
 
-            # Очистка HTML
             clean_html_text = clean_html(assistant_response)
             logger.info(f"После очистки: {len(clean_html_text)} символов")
 
@@ -347,7 +354,6 @@ def generate_contract():
                     'debug': assistant_response[:500]
                 }), 500
 
-            # Сохранение
             logger.info("Сохранение в историю...")
             save_to_history(contract_type, user_input, clean_html_text, model, cost)
 
@@ -362,7 +368,7 @@ def generate_contract():
 
         except anthropic.AuthenticationError as e:
             logger.error(f"Ошибка аутентификации Claude API: {str(e)}")
-            return jsonify({'error': f'Ошибка API ключа Claude: {str(e)}. Проверьте ANTHROPIC_API_KEY в переменных окружения.'}), 500
+            return jsonify({'error': f'Ошибка API ключа Claude: {str(e)}'}), 500
         
         except anthropic.APIError as e:
             logger.error(f"Ошибка Claude API: {str(e)}")
@@ -373,8 +379,10 @@ def generate_contract():
         logger.error(traceback.format_exc())
         return jsonify({'error': f'Ошибка сервера: {str(e)}'}), 500
 
+# ВАЖНО: Инициализация БД при импорте модуля
+init_db()
+
 if __name__ == '__main__':
-    init_db()
     port = int(os.getenv('PORT', 5000))
     logger.info(f"Запуск приложения на порту {port}")
     logger.info(f"API ключ установлен: {'Да' if API_KEY else 'НЕТ'}")
