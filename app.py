@@ -1,7 +1,7 @@
 """
 Сити Менедж Снег - Генератор договоров
 Веб-приложение с Claude AI для автоматического заполнения договоров
-Версия: 1.0
+Версия: 1.1 (исправлена проблема с пустым HTML)
 """
 
 from flask import Flask, render_template, request, jsonify, send_file, session, redirect, url_for
@@ -13,6 +13,7 @@ import base64
 from datetime import datetime
 from pathlib import Path
 import sqlite3
+import re
 from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
@@ -25,35 +26,46 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
 API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 
 # Пароль для доступа (задается через переменную окружения)
-APP_PASSWORD = os.getenv("APP_PASSWORD", "sneg2025")  # По умолчанию: sneg2025
+APP_PASSWORD = os.getenv("APP_PASSWORD", "sneg2025")
 
 # Модели
 MODEL_HAIKU = "claude-3-5-haiku-20241022"
 MODEL_SONNET = "claude-sonnet-4-20250514"
 
 # Системный промпт
-SYSTEM_PROMPT = """Ты — ассистент по сборке юридических документов в HTML. Твоя задача: по пользовательскому запросу собрать единый HTML-документ из нескольких HTML-шаблонов проекта, корректно заполнить поля, сохранить исходное форматирование и выдать результат в одном файле.
+SYSTEM_PROMPT = """Ты — ассистент по сборке юридических документов в HTML.
 
-ВАЖНО: Все плейсхолдеры имеют вид:
+ЗАДАЧА: По запросу пользователя собрать единый HTML-документ из предоставленных шаблонов и заполнить все поля данными.
+
+ВАЖНО О ПЛЕЙСХОЛДЕРАХ:
+Все плейсхолдеры имеют вид:
 <!--FIELD:ИмяПоля--><span data-ph="ИмяПоля">[ИмяПоля]</span><!--/FIELD-->
 
-Разрешено изменять ТОЛЬКО текст внутри <span data-ph="...">...</span>.
+Ты МОЖЕШЬ изменять ТОЛЬКО текст внутри <span data-ph="...">ЗДЕСЬ</span>.
+НЕ трогай HTML-теги, стили, структуру.
 
-Источник данных и приоритет:
-1. Явные данные из текста запроса пользователя
-2. Файлы, прикрепленные пользователем
-3. Если значение не найдено — задай уточняющий вопрос
+ИСТОЧНИКИ ДАННЫХ (приоритет):
+1. Явные данные из текста пользователя
+2. Прикрепленные файлы
+3. Если не хватает данных - задай вопрос в формате JSON
 
-Автологика:
+АВТОЛОГИКА:
 - Номер договора: если не указан, генерируй как ДДММГГГГ/N
-- Дата договора: текущая дата ({current_date}), если не указана иная
-- Реквизиты: каждый пункт с новой строки ВНУТРИ ячейки (используй <br>)
+- Дата договора: {current_date} если не указана
+- Реквизиты: каждый пункт с новой строки ВНУТРИ ячейки через <br>
 
 КРИТИЧЕСКИ ВАЖНО:
-1. Верни ТОЛЬКО готовый HTML-документ без дополнительных объяснений
-2. НЕ используй markdown-блоки (```html)
-3. НЕ добавляй текст до или после HTML
-4. Если нужно задать вопрос - верни JSON: {{"question": "текст вопроса", "missing_fields": ["поле1", "поле2"]}}"""
+1. Верни ТОЛЬКО готовый HTML без дополнительного текста
+2. НЕ используй markdown блоки ```html или ```
+3. НЕ добавляй объяснений до или после HTML
+4. Если нужны данные - верни ТОЛЬКО JSON: {{"question": "текст", "missing_fields": ["поле1"]}}
+5. HTML должен начинаться с <!DOCTYPE html> или <html> или первого тега из шаблона
+
+ФОРМАТ ОТВЕТА:
+- Если все данные есть: верни чистый HTML
+- Если нужны данные: верни JSON с вопросом
+
+НЕ ДОБАВЛЯЙ НИКАКОГО ТЕКСТА КРОМЕ HTML ИЛИ JSON!"""
 
 # Справочник Озон
 OZON_DIRECTORY = {
@@ -187,6 +199,37 @@ def view_contract(contract_id):
         return contract[3]  # generated_html
     return "Договор не найден", 404
 
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
+
+def extract_html_from_response(text):
+    """Извлечение HTML из ответа Claude с очисткой от markdown"""
+    # Убираем markdown блоки
+    text = re.sub(r'```html\s*', '', text)
+    text = re.sub(r'```\s*', '', text)
+    text = text.strip()
+    
+    # Если начинается с DOCTYPE или html тега - возвращаем как есть
+    if text.startswith('<!DOCTYPE') or text.startswith('<html') or text.startswith('<div'):
+        return text
+    
+    # Ищем первый HTML тег
+    html_start = re.search(r'<(!DOCTYPE|html|div|table|body)', text, re.IGNORECASE)
+    if html_start:
+        return text[html_start.start():].strip()
+    
+    return text
+
+def is_json_response(text):
+    """Проверка является ли ответ JSON с вопросом"""
+    text = text.strip()
+    if text.startswith('{') and text.endswith('}'):
+        try:
+            data = json.loads(text)
+            return 'question' in data, data
+        except json.JSONDecodeError:
+            pass
+    return False, None
+
 # ==================== API ENDPOINTS ====================
 
 @app.route('/api/generate', methods=['POST'])
@@ -221,6 +264,11 @@ def generate_contract():
             if template_path.exists():
                 with open(template_path, 'r', encoding='utf-8') as f:
                     template_parts.append(f.read())
+            else:
+                return jsonify({'error': f'Шаблон не найден: {part_file}'}), 500
+
+        if not template_parts:
+            return jsonify({'error': 'Не удалось загрузить шаблоны'}), 500
 
         # Формирование промпта
         current_date = datetime.now().strftime('%d.%m.%Y')
@@ -254,27 +302,29 @@ def generate_contract():
                 })
 
         # Текстовый промпт
-        template_text = '\n\n'.join([f'=== ЧАСТЬ {i+1} ===\n{part}' for i, part in enumerate(template_parts)])
+        template_text = '\n\n=== РАЗДЕЛИТЕЛЬ ЧАСТЕЙ ===\n\n'.join([f'ЧАСТЬ {i+1}:\n{part}' for i, part in enumerate(template_parts)])
         
         user_message = f"""Тип договора: {contract_config['name']}
 
-HTML-шаблоны для сборки:
+HTML-ШАБЛОНЫ (собери их в один документ):
 {template_text}
 
-Справочник для Озон (используй ТОЛЬКО если выбран Договор Сити Менедж Озон):
-{json.dumps(OZON_DIRECTORY, ensure_ascii=False, indent=2)}
+{'СПРАВОЧНИК ОЗОН (используй только для Договора Сити Менедж Озон):\n' + json.dumps(OZON_DIRECTORY, ensure_ascii=False, indent=2) if 'ozon' in contract_type else ''}
 
-Данные от пользователя:
+ДАННЫЕ ОТ ПОЛЬЗОВАТЕЛЯ:
 {user_input}
 
-ИНСТРУКЦИЯ: 
-1. Проанализируй все предоставленные данные (текст + прикрепленные файлы)
-2. Собери единый HTML-документ из указанных частей
-3. Заполни ВСЕ плейсхолдеры данными
-4. Если каких-то данных не хватает - верни JSON с вопросом: {{"question": "...", "missing_fields": [...]}}
-5. Если все данные есть - верни ТОЛЬКО готовый HTML без markdown-блоков
+ИНСТРУКЦИЯ:
+1. Проанализируй данные (текст + файлы если есть)
+2. Собери единый HTML из всех частей шаблона
+3. Заполни ВСЕ плейсхолдеры <!--FIELD:...-->...</span><!--/FIELD-->
+4. Если данных не хватает - верни JSON: {{"question": "что нужно?", "missing_fields": ["поле1"]}}
+5. Если все данные есть - верни ТОЛЬКО чистый HTML БЕЗ markdown блоков
 
-ВАЖНО: Не используй markdown ```html, верни чистый HTML!"""
+ВАЖНО: 
+- НЕ используй ```html
+- Верни ТОЛЬКО HTML или ТОЛЬКО JSON
+- Никаких объяснений!"""
 
         content.append({
             'type': 'text',
@@ -282,6 +332,9 @@ HTML-шаблоны для сборки:
         })
 
         # Вызов Claude API
+        if not API_KEY:
+            return jsonify({'error': 'API ключ не настроен. Добавьте ANTHROPIC_API_KEY в переменные окружения.'}), 500
+
         client = anthropic.Anthropic(api_key=API_KEY)
         
         messages = conversation_history + [{'role': 'user', 'content': content}]
@@ -305,21 +358,25 @@ HTML-шаблоны для сборки:
             cost = (input_tokens * 3 / 1000000) + (output_tokens * 15 / 1000000)
 
         # Проверка - это вопрос или готовый договор?
-        try:
-            json_response = json.loads(assistant_response)
-            if 'question' in json_response:
-                return jsonify({
-                    'status': 'question',
-                    'question': json_response['question'],
-                    'missing_fields': json_response.get('missing_fields', []),
-                    'conversation': messages + [{'role': 'assistant', 'content': assistant_response}],
-                    'cost': round(cost, 4)
-                })
-        except json.JSONDecodeError:
-            pass
+        is_json, json_data = is_json_response(assistant_response)
+        if is_json and json_data and 'question' in json_data:
+            return jsonify({
+                'status': 'question',
+                'question': json_data['question'],
+                'missing_fields': json_data.get('missing_fields', []),
+                'conversation': messages + [{'role': 'assistant', 'content': assistant_response}],
+                'cost': round(cost, 4)
+            })
 
-        # Очистка HTML от markdown блоков
-        clean_html = assistant_response.replace('```html\n', '').replace('```html', '').replace('```\n', '').replace('```', '').strip()
+        # Извлечение и очистка HTML
+        clean_html = extract_html_from_response(assistant_response)
+
+        # Проверка что HTML не пустой
+        if len(clean_html) < 100:
+            return jsonify({
+                'error': 'Получен слишком короткий ответ. Попробуйте еще раз или используйте модель Sonnet.',
+                'debug_response': assistant_response[:500]
+            }), 500
 
         # Сохранение в историю
         save_to_history(contract_type, user_input, clean_html, model, cost)
@@ -335,8 +392,10 @@ HTML-шаблоны для сборки:
             }
         })
 
+    except anthropic.APIError as e:
+        return jsonify({'error': f'Ошибка Claude API: {str(e)}'}), 500
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': f'Ошибка сервера: {str(e)}'}), 500
 
 # ==================== ЗАПУСК ====================
 
