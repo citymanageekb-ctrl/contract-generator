@@ -1,6 +1,6 @@
 """
 Сити Менедж Снег - Генератор договоров
-Версия: 1.4 - Исправлена инициализация БД
+Версия: 1.5 - Улучшенный промпт
 """
 
 from flask import Flask, render_template, request, jsonify, send_file, session, redirect, url_for
@@ -17,7 +17,6 @@ import traceback
 import logging
 from werkzeug.security import check_password_hash, generate_password_hash
 
-# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -34,26 +33,31 @@ APP_PASSWORD = os.getenv("APP_PASSWORD", "sneg2025")
 MODEL_HAIKU = "claude-3-5-haiku-20241022"
 MODEL_SONNET = "claude-sonnet-4-20250514"
 
-SYSTEM_PROMPT = """Ты - эксперт по заполнению HTML-документов.
+# УЛУЧШЕННЫЙ СИСТЕМНЫЙ ПРОМПТ
+SYSTEM_PROMPT = """Ты - эксперт по составлению юридических договоров в формате HTML.
 
-ЗАДАЧА: Взять HTML-шаблоны и заполнить поля данными пользователя.
+КРИТИЧЕСКИ ВАЖНО:
+1. СОХРАНЯЙ ВСЮ СТРУКТУРУ документа - все части, все приложения, все разделы
+2. ПРИОРИТЕТ ДАННЫХ: файлы (изображения/PDF) > текст пользователя > автозаполнение
+3. НЕ ВЫДУМЫВАЙ данные - если нет информации, оставь плейсхолдер [ИмяПоля]
+4. ТОЧНО следуй форматированию (тире, пробелы, регистр цифр)
 
-ПРАВИЛА:
-1. Найди конструкции: <!--FIELD:Имя--><span data-ph="Имя">[Имя]</span><!--/FIELD-->
-2. Замени текст ТОЛЬКО внутри <span data-ph="...">...</span>
-3. НЕ меняй HTML-теги и стили
-4. Собери все части в один документ
+ФОРМАТ УСЛУГ (обязательно):
+- Одна услуга = одно предложение с точкой
+- Используй тире " – " (не дефис, не двоеточие)
+- Цифры в верхнем регистре: м³ (не м3), м² (не м2)
+- Пример: "Механизированная уборка снега погрузчиком – 3000 руб/час с НДС 20%. Вывоз снега самосвалом 20 м³ – 5100 руб/рейс с НДС 20%."
 
-АВТОЗАПОЛНЕНИЕ:
-- Номер договора не указан → ДДММГГГГ/1
-- Дата не указана → {current_date}
+РАБОТА С ДАННЫМИ:
+1. Сначала изучи ВСЕ прикрепленные файлы (там могут быть реквизиты, контакты)
+2. Потом используй текст пользователя
+3. НЕ ПУТАЙ разные типы данных (реквизиты ≠ контакты, услуги ≠ адреса)
 
-ФОРМАТ ОТВЕТА:
-- Если все данные есть: верни ТОЛЬКО HTML
-- Если нужны данные: {{"question": "...", "missing_fields": [...]}}
+СТРУКТУРА ОТВЕТА:
+- Весь документ целиком: основной договор + ВСЕ приложения
+- Проверь что все части на месте перед отправкой
 
-НЕ используй markdown блоки ```
-Начни ответ с HTML тега."""
+Текущая дата: {current_date}"""
 
 OZON_DIRECTORY = {
     'Озон Сургут': 'ООО "Интернет Решения" г. Сургут, Нефтеюганское шоссе, д. 22/2',
@@ -90,7 +94,6 @@ CONTRACT_TYPES = {
 }
 
 def init_db():
-    """Инициализация базы данных"""
     try:
         conn = sqlite3.connect('contracts_history.db')
         c = conn.cursor()
@@ -258,11 +261,27 @@ def generate_contract():
         current_date = datetime.now().strftime('%d.%m.%Y')
         system_prompt = SYSTEM_PROMPT.format(current_date=current_date)
 
+        # УЛУЧШЕННОЕ ФОРМИРОВАНИЕ КОНТЕНТА
         content = []
+
+        # ФАЙЛЫ СНАЧАЛА (приоритет!)
+        if files_data:
+            content.append({
+                'type': 'text',
+                'text': f"""ПРИКРЕПЛЁННЫЕ ФАЙЛЫ ({len(files_data)} шт.):
+Внимательно изучи все файлы - там могут быть реквизиты, контакты, печати, подписи.
+ПРИОРИТЕТ: Данные из файлов > текст пользователя."""
+            })
 
         for i, file_data in enumerate(files_data):
             file_type = file_data.get('type', '')
-            logger.info(f"Файл {i+1}: {file_type}")
+            file_name = file_data.get('name', f'file_{i+1}')
+            logger.info(f"Файл {i+1}: {file_name} ({file_type})")
+            
+            content.append({
+                'type': 'text',
+                'text': f"ФАЙЛ {i+1}: {file_name}"
+            })
             
             if 'image' in file_type:
                 content.append({
@@ -283,19 +302,60 @@ def generate_contract():
                     }
                 })
 
-        combined_template = '\n\n<!-- РАЗДЕЛИТЕЛЬ -->\n\n'.join(template_parts)
+        # ТЕПЕРЬ ШАБЛОНЫ И ДАННЫЕ
+        # Формируем чёткую структуру с разделителями
+        template_text = ""
+        for i, part in enumerate(template_parts):
+            template_text += f"\n\n{'='*80}\n"
+            template_text += f"ЧАСТЬ {i+1} из {len(template_parts)}: {contract_config['parts'][i]}\n"
+            template_text += f"{'='*80}\n\n"
+            template_text += part
         
-        user_message = f"""ЗАДАЧА: Заполни HTML-шаблон данными
+        # УЛУЧШЕННЫЙ USER MESSAGE
+        user_message = f"""ЗАДАЧА: Составь договор, заполнив ВСЕ части шаблона данными.
 
-ШАБЛОН:
-{combined_template}
+{'='*80}
+СТРУКТУРА ДОКУМЕНТА - ДОЛЖНЫ БЫТЬ ВСЕ ЧАСТИ:
+{'='*80}
+{chr(10).join([f"{i+1}. {part}" for i, part in enumerate(contract_config['parts'])])}
 
-ДАННЫЕ:
+{'='*80}
+HTML-ШАБЛОНЫ:
+{'='*80}
+{template_text}
+
+{'='*80}
+ДАННЫЕ ОТ ПОЛЬЗОВАТЕЛЯ:
+{'='*80}
 {user_input}
 
-{'СПРАВОЧНИК ОЗОН: ' + json.dumps(OZON_DIRECTORY, ensure_ascii=False) if 'ozon' in contract_type else ''}
+{'='*80}
+ПРАВИЛА ЗАПОЛНЕНИЯ:
+{'='*80}
+1. СТРУКТУРА: Верни ВСЕ {len(template_parts)} части документа в ОДНОМ HTML
+2. ПЛЕЙСХОЛДЕРЫ: Замени <!--FIELD:Имя--><span data-ph="Имя">[Имя]</span><!--/FIELD--> на данные
+3. ПРИОРИТЕТ: Файлы → Текст пользователя → Автозаполнение
+4. НЕ ПУТАЙ: Реквизиты ≠ Контакты, Услуги ≠ Адреса
+5. ФОРМАТ УСЛУГ:
+   - Одна услуга = одно предложение с точкой
+   - Тире: " – " (длинное, с пробелами)
+   - Верхний регистр: м³ (не м3), м² (не м2)
+   - Пример: "Механизированная уборка снега погрузчиком – 3000 руб/час с НДС 20%. Вывоз снега 20 м³ – 5100 руб/рейс с НДС 20%."
 
-Верни ТОЛЬКО HTML без markdown блоков."""
+{'='*80}
+ПРОВЕРКА ПЕРЕД ОТПРАВКОЙ:
+{'='*80}
+✓ Все {len(template_parts)} части на месте?
+✓ Данные из файлов использованы?
+✓ Услуги в правильном формате (тире, м³)?
+✓ Реквизиты из файла, не выдуманные?
+
+{'='*80}
+
+{f"СПРАВОЧНИК (только для Озон):{chr(10)}" + json.dumps(OZON_DIRECTORY, ensure_ascii=False, indent=2) if 'ozon' in contract_type else ''}
+
+ВАЖНО: Верни ВЕСЬ документ (все {len(template_parts)} части) БЕЗ markdown блоков.
+Начни с первого HTML тега."""
 
         content.append({'type': 'text', 'text': user_message})
 
@@ -307,10 +367,10 @@ def generate_contract():
 
             response = client.messages.create(
                 model=model,
-                max_tokens=8000,
+                max_tokens=16000,  # Увеличили для больших документов
                 system=system_prompt,
                 messages=messages,
-                temperature=0.3
+                temperature=0.2  # Меньше креативности, больше точности
             )
 
             logger.info("Получен ответ от Claude API")
@@ -347,10 +407,10 @@ def generate_contract():
             clean_html_text = clean_html(assistant_response)
             logger.info(f"После очистки: {len(clean_html_text)} символов")
 
-            if len(clean_html_text) < 200:
+            if len(clean_html_text) < 1000:
                 logger.error(f"Ответ слишком короткий: {len(clean_html_text)} символов")
                 return jsonify({
-                    'error': 'Получен слишком короткий ответ. Попробуйте модель Sonnet.',
+                    'error': 'Получен слишком короткий ответ. Попробуйте модель Sonnet или добавьте больше данных.',
                     'debug': assistant_response[:500]
                 }), 500
 
@@ -379,7 +439,7 @@ def generate_contract():
         logger.error(traceback.format_exc())
         return jsonify({'error': f'Ошибка сервера: {str(e)}'}), 500
 
-# ВАЖНО: Инициализация БД при импорте модуля
+# Инициализация БД
 init_db()
 
 if __name__ == '__main__':
