@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>История договоров - Сити Менедж Снег</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            color: #667eea;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        .btn:hover {
+            background: #e0e0e0;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .history-item {
+            border-bottom: 1px solid #e0e0e0;
+            padding: 15px 0;
+        }
+
+        .history-item:last-child {
+            border-bottom: none;
+        }
+
+        .history-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+
+        .contract-type {
+            font-weight: 600;
+            color: #667eea;
+            font-size: 16px;
+        }
+
+        .contract-date {
+            color: #666;
+            font-size: 14px;
+        }
+
+        .contract-data {
+            color: #333;
+            font-size: 14px;
+            margin-bottom: 10px;
+            white-space: pre-wrap;
+            max-height: 60px;
+            overflow: hidden;
+        }
+
+        .contract-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 12px;
+            color: #999;
+        }
+
+        .btn-view {
+            padding: 8px 16px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .btn-view:hover {
+            background: #5568d3;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+
+        .empty-state-icon {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📋 История договоров</h1>
+            <a href="{{ url_for('index') }}" class="btn">← Назад</a>
+        </div>
+
+        <div class="card">
+            {% if contracts %}
+                {% for contract in contracts %}
+                <div class="history-item">
+                    <div class="history-header">
+                        <div>
+                            <div class="contract-type">
+                                {{ contract_types[contract[1]].name if contract[1] in contract_types else 'Неизвестный тип' }}
+                            </div>
+                            <div class="contract-date">{{ contract[3] }}</div>
+                        </div>
+                        <a href="{{ url_for('view_contract', contract_id=contract[0]) }}" target="_blank" class="btn-view">
+                            Просмотреть
+                        </a>
+                    </div>
+                    <div class="contract-data">{{ contract[2][:200] }}...</div>
+                    <div class="contract-meta">
+                        <span>🤖 Модель: {{ 'Haiku' if 'haiku' in contract[4].lower() else 'Sonnet' }}</span>
+                        <span>💰 Стоимость: ~{{ (contract[5] * 100)|round(1) if contract[5] else 0 }}₽</span>
+                    </div>
+                </div>
+                {% endfor %}
+            {% else %}
+                <div class="empty-state">
+                    <div class="empty-state-icon">📭</div>
+                    <p>История пуста</p>
+                    <p style="margin-top: 10px; font-size: 14px;">Создайте первый договор!</p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Генератор договоров - Сити Менедж Снег</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            color: #667eea;
+        }
+
+        .header-buttons {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border-radius: 8px;
+            border: none;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .btn-secondary {
+            background: #f5f5f5;
+            color: #333;
+        }
+
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+        }
+
+        .card h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        select, textarea {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+        }
+
+        select:focus, textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        textarea {
+            min-height: 200px;
+            resize: vertical;
+        }
+
+        .file-upload {
+            border: 2px dashed #667eea;
+            border-radius: 8px;
+            padding: 30px;
+            text-align: center;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+
+        .file-upload:hover {
+            background-color: #f5f5ff;
+        }
+
+        .file-upload input {
+            display: none;
+        }
+
+        .files-list {
+            margin-top: 15px;
+        }
+
+        .file-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px;
+            background: #f5f5f5;
+            border-radius: 6px;
+            margin-bottom: 8px;
+        }
+
+        .btn-remove {
+            background: #ff4444;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .btn-generate {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-generate:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-generate:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        .result-area {
+            display: none;
+        }
+
+        .result-area.active {
+            display: block;
+        }
+
+        .alert {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+        }
+
+        .alert-success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+
+        .alert-warning {
+            background: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+        }
+
+        .alert-error {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+        }
+
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .contract-preview {
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            max-height: 600px;
+            overflow-y: auto;
+            background: #fafafa;
+        }
+
+        .model-toggle {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .model-option {
+            flex: 1;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .model-option.active {
+            border-color: #667eea;
+            background: #f5f5ff;
+        }
+
+        .cost-info {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+
+        @media (max-width: 968px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>❄️ Сити Менедж Снег - Генератор договоров</h1>
+            <div class="header-buttons">
+                <a href="{{ url_for('history') }}" class="btn btn-secondary">📋 История</a>
+                <a href="{{ url_for('logout') }}" class="btn btn-secondary">Выход</a>
+            </div>
+        </div>
+
+        <div class="main-content">
+            <!-- Левая панель - Ввод данных -->
+            <div class="card">
+                <h2>📝 Создание договора</h2>
+
+                <div class="form-group">
+                    <label>Тип договора:</label>
+                    <select id="contractType">
+                        <option value="">-- Выберите тип --</option>
+                        {% for key, contract in contract_types.items() %}
+                        <option value="{{ key }}">{{ contract.name }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label>Модель AI:</label>
+                    <div class="model-toggle">
+                        <div class="model-option active" data-model="haiku">
+                            <strong>Haiku</strong>
+                            <div class="cost-info">Быстрая, ~1.5₽</div>
+                        </div>
+                        <div class="model-option" data-model="sonnet">
+                            <strong>Sonnet</strong>
+                            <div class="cost-info">Точная, ~18₽</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="form-group">
+                    <label>Прикрепить файлы:</label>
+                    <div class="file-upload" id="fileUpload">
+                        <input type="file" id="fileInput" multiple accept=".pdf,.jpg,.jpeg,.png">
+                        <div>📁 Нажмите или перетащите файлы</div>
+                        <small>PDF, изображения</small>
+                    </div>
+                    <div class="files-list" id="filesList"></div>
+                </div>
+
+                <div class="form-group">
+                    <label>Данные для договора:</label>
+                    <textarea id="userInput" placeholder="Пример:
+
+Договор №20102024/15 от 20.10.2024
+Город: Екатеринбург
+Заказчик: ООО 'Ромашка'
+Директор: Петров П.П.
+Объект: Озон Екатеринбург Логопарк
+Услуги: Уборка территории 50000 руб/мес
+Ответственный: Сидоров С.С., sidorov@example.com"></textarea>
+                </div>
+
+                <button class="btn-generate" id="generateBtn">🤖 Сгенерировать договор</button>
+            </div>
+
+            <!-- Правая панель - Результат -->
+            <div class="card">
+                <h2>📄 Результат</h2>
+
+                <div id="initialMessage">
+                    <div style="text-align: center; padding: 60px 20px; color: #999;">
+                        <div style="font-size: 48px; margin-bottom: 20px;">📋</div>
+                        <p>Выберите тип договора, введите данные<br>и нажмите "Сгенерировать"</p>
+                    </div>
+                </div>
+
+                <div id="loadingMessage" style="display: none;">
+                    <div class="loading">
+                        <div class="spinner"></div>
+                        <p style="color: #667eea; font-weight: 600;">Обработка запроса...</p>
+                    </div>
+                </div>
+
+                <div id="resultArea" class="result-area">
+                    <div id="alerts"></div>
+                    <div id="contractPreview" class="contract-preview"></div>
+                    <div style="margin-top: 15px; display: flex; gap: 10px;">
+                        <button class="btn-generate" id="downloadBtn">💾 Скачать HTML</button>
+                        <button class="btn-generate" style="flex: 0.5; background: #28a745;" id="resetBtn">🔄 Новый</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let uploadedFiles = [];
+        let useSonnet = false;
+        let conversationHistory = [];
+        let generatedHtml = '';
+
+        // Выбор модели
+        document.querySelectorAll('.model-option').forEach(option => {
+            option.addEventListener('click', function() {
+                document.querySelectorAll('.model-option').forEach(o => o.classList.remove('active'));
+                this.classList.add('active');
+                useSonnet = this.dataset.model === 'sonnet';
+            });
+        });
+
+        // Загрузка файлов
+        const fileUpload = document.getElementById('fileUpload');
+        const fileInput = document.getElementById('fileInput');
+        const filesList = document.getElementById('filesList');
+
+        fileUpload.addEventListener('click', () => fileInput.click());
+        
+        fileInput.addEventListener('change', handleFiles);
+
+        async function handleFiles(e) {
+            const files = Array.from(e.target.files);
+            for (const file of files) {
+                const base64 = await readFileAsBase64(file);
+                uploadedFiles.push({
+                    name: file.name,
+                    type: file.type,
+                    data: base64,
+                    size: file.size
+                });
+            }
+            renderFilesList();
+        }
+
+        function readFileAsBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result.split(',')[1]);
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        function renderFilesList() {
+            filesList.innerHTML = uploadedFiles.map((file, index) => `
+                <div class="file-item">
+                    <span>📄 ${file.name} (${(file.size / 1024).toFixed(1)} KB)</span>
+                    <button class="btn-remove" onclick="removeFile(${index})">Удалить</button>
+                </div>
+            `).join('');
+        }
+
+        function removeFile(index) {
+            uploadedFiles.splice(index, 1);
+            renderFilesList();
+        }
+
+        // Генерация договора
+        document.getElementById('generateBtn').addEventListener('click', generateContract);
+
+        async function generateContract() {
+            const contractType = document.getElementById('contractType').value;
+            const userInput = document.getElementById('userInput').value.trim();
+
+            if (!contractType) {
+                alert('Выберите тип договора');
+                return;
+            }
+
+            if (!userInput && uploadedFiles.length === 0) {
+                alert('Введите данные или загрузите файлы');
+                return;
+            }
+
+            document.getElementById('initialMessage').style.display = 'none';
+            document.getElementById('loadingMessage').style.display = 'block';
+            document.getElementById('resultArea').classList.remove('active');
+            document.getElementById('generateBtn').disabled = true;
+
+            try {
+                const response = await fetch('/api/generate', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        contract_type: contractType,
+                        user_input: userInput,
+                        files: uploadedFiles,
+                        use_sonnet: useSonnet,
+                        conversation_history: conversationHistory
+                    })
+                });
+
+                const data = await response.json();
+
+                document.getElementById('loadingMessage').style.display = 'none';
+                document.getElementById('resultArea').classList.add('active');
+
+                if (data.status === 'question') {
+                    showAlert('warning', `Claude задал вопрос: ${data.question}<br><br>Отсутствующие поля: ${data.missing_fields.join(', ')}<br><br>Добавьте информацию и попробуйте снова.`);
+                    conversationHistory = data.conversation;
+                } else if (data.status === 'success') {
+                    generatedHtml = data.html;
+                    document.getElementById('contractPreview').innerHTML = data.html;
+                    showAlert('success', `✅ Договор успешно создан!<br>Модель: ${data.model === 'claude-3-5-haiku-20241022' ? 'Haiku' : 'Sonnet'}<br>Стоимость: $${data.cost} (~${(data.cost * 100).toFixed(1)}₽)<br>Токены: ${data.tokens.input} вход / ${data.tokens.output} выход`);
+                    conversationHistory = [];
+                }
+            } catch (error) {
+                document.getElementById('loadingMessage').style.display = 'none';
+                showAlert('error', 'Ошибка: ' + error.message);
+            } finally {
+                document.getElementById('generateBtn').disabled = false;
+            }
+        }
+
+        function showAlert(type, message) {
+            const alertClass = `alert-${type === 'question' ? 'warning' : type}`;
+            document.getElementById('alerts').innerHTML = `
+                <div class="alert ${alertClass}">
+                    ${message}
+                </div>
+            `;
+        }
+
+        // Скачивание
+        document.getElementById('downloadBtn').addEventListener('click', () => {
+            const blob = new Blob([generatedHtml], { type: 'text/html' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `договор_${Date.now()}.html`;
+            a.click();
+            URL.revokeObjectURL(url);
+        });
+
+        // Сброс
+        document.getElementById('resetBtn').addEventListener('click', () => {
+            document.getElementById('userInput').value = '';
+            uploadedFiles = [];
+            renderFilesList();
+            conversationHistory = [];
+            generatedHtml = '';
+            document.getElementById('resultArea').classList.remove('active');
+            document.getElementById('initialMessage').style.display = 'block';
+        });
+    </script>
+</body>
+</html>
