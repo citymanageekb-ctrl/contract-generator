@@ -114,10 +114,31 @@
             cursor: pointer;
             text-decoration: none;
             font-size: 14px;
+            margin-right: 8px;
         }
 
         .btn-view:hover {
             background: #5568d3;
+        }
+
+        .btn-docx {
+            padding: 8px 16px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            text-decoration: none;
+            font-size: 14px;
+        }
+
+        .btn-docx:hover {
+            background: #218838;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 8px;
         }
 
         .empty-state {
@@ -150,9 +171,14 @@
                             </div>
                             <div class="contract-date">{{ contract[3] }}</div>
                         </div>
-                        <a href="{{ url_for('view_contract', contract_id=contract[0]) }}" target="_blank" class="btn-view">
-                            Просмотреть
-                        </a>
+                        <div class="action-buttons">
+                            <a href="{{ url_for('view_contract', contract_id=contract[0]) }}" target="_blank" class="btn-view">
+                                👁️ Просмотр
+                            </a>
+                            <a href="{{ url_for('download_contract', contract_id=contract[0]) }}" class="btn-docx">
+                                📄 DOCX
+                            </a>
+                        </div>
                     </div>
                     <div class="contract-data">{{ contract[2][:200] }}...</div>
                     <div class="contract-meta">
