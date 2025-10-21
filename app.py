@@ -1,6 +1,6 @@
 """
 Сити Менедж Снег - Генератор договоров
-Версия: 1.5 - Улучшенный промпт
+Версия: 1.6 - Универсал, расширенные справочники, экспорт в DOCX
 """
 
 from flask import Flask, render_template, request, jsonify, send_file, session, redirect, url_for
@@ -15,7 +15,12 @@ import sqlite3
 import re
 import traceback
 import logging
+from io import BytesIO
 from werkzeug.security import check_password_hash, generate_password_hash
+
+# Для конвертации HTML в DOCX
+from docx import Document
+from htmldocx import HtmlToDocx
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,41 +38,81 @@ APP_PASSWORD = os.getenv("APP_PASSWORD", "sneg2025")
 MODEL_HAIKU = "claude-3-5-haiku-20241022"
 MODEL_SONNET = "claude-sonnet-4-20250514"
 
-# УЛУЧШЕННЫЙ СИСТЕМНЫЙ ПРОМПТ
+# СИСТЕМНЫЙ ПРОМПТ
 SYSTEM_PROMPT = """Ты - эксперт по составлению юридических договоров в формате HTML.
 
 КРИТИЧЕСКИ ВАЖНО:
-1. СОХРАНЯЙ ВСЮ СТРУКТУРУ документа - все части, все приложения, все разделы
-2. ПРИОРИТЕТ ДАННЫХ: файлы (изображения/PDF) > текст пользователя > автозаполнение
-3. НЕ ВЫДУМЫВАЙ данные - если нет информации, оставь плейсхолдер [ИмяПоля]
-4. ТОЧНО следуй форматированию (тире, пробелы, регистр цифр)
+1. СОХРАНЯЙ ВСЮ СТРУКТУРУ - все части, приложения, разделы
+2. ПРИОРИТЕТ ДАННЫХ: файлы > текст > справочники > автозаполнение
+3. НЕ ВЫДУМЫВАЙ данные - если нет, оставь [ИмяПоля]
+4. ТОЧНО следуй форматированию
 
-ФОРМАТ УСЛУГ (обязательно):
-- Одна услуга = одно предложение с точкой
-- Используй тире " – " (не дефис, не двоеточие)
-- Цифры в верхнем регистре: м³ (не м3), м² (не м2)
-- Пример: "Механизированная уборка снега погрузчиком – 3000 руб/час с НДС 20%. Вывоз снега самосвалом 20 м³ – 5100 руб/рейс с НДС 20%."
+ФОРМАТ УСЛУГ (СТРОГО):
+✅ ПРАВИЛЬНО: "Механизированная уборка снега погрузчиком – 3000 руб/час с НДС 20%. Вывоз снега 20 м³ – 5100 руб/рейс с НДС 20%."
+❌ НЕПРАВИЛЬНО: точка с запятой, двоеточие, дефис, м3
 
-РАБОТА С ДАННЫМИ:
-1. Сначала изучи ВСЕ прикрепленные файлы (там могут быть реквизиты, контакты)
-2. Потом используй текст пользователя
-3. НЕ ПУТАЙ разные типы данных (реквизиты ≠ контакты, услуги ≠ адреса)
+ПРАВИЛА:
+- Разделитель: ". " (точка + пробел)
+- Тире: " – " (длинное + пробелы)
+- Регистр: м³ (не м3)
 
-СТРУКТУРА ОТВЕТА:
-- Весь документ целиком: основной договор + ВСЕ приложения
-- Проверь что все части на месте перед отправкой
+E-MAIL ОТВЕТСТВЕННОГО:
+- Сити Менедж: если email = "mitkina.citymanage@yandex.ru" → пусто, иначе → ", {email}"
+- Скориченко: всегда вставляй email
+
+ОТВЕТСТВЕННОЕ ЛИЦО:
+ОБЯЗАТЕЛЬНО: "ФИО, тел. +7 XXX XXX-XX-XX, e-mail: xxx@xxx.ru"
 
 Текущая дата: {current_date}"""
 
-OZON_DIRECTORY = {
-    'Озон Сургут': 'ООО "Интернет Решения" г. Сургут, Нефтеюганское шоссе, д. 22/2',
-    'Озон Ноябрьск': 'ООО "Интернет Решения" ЯНАО, г. Ноябрьск, промузел Пелей, 12-й проезд, панель XIV',
-    'Озон Тагил': 'ООО "Интернет Решения" г. Нижний Тагил, Свердловское шоссе, д. 65',
-    'Озон Тюмень': 'ООО "Интернет Решения" г. Тюмень, ул. 30 лет Победы',
-    'Озон Миасс': 'ООО "Интернет Решения" г. Миасс, ул. 60 лет Октября, стр. 1/1',
-    'Озон Челябинск': 'ООО "Интернет Решения" г. Челябинск, ул. Линейная, д. 59/1',
-    'Озон Екатеринбург Логопарк': 'ООО "Интернет Решения" г. Екатеринбург, логопарк Кольцовский, 15',
-    'Озон Екатеринбург Черняховского': 'ООО "Интернет Решения" г. Екатеринбург, ул. Черняховского, д. 104'
+# СПРАВОЧНИКИ
+OBJECTS_DIRECTORY = {
+    'Озон Сургут': 'ООО «Интернет Решения» г. Сургут, Нефтеюганское шоссе, д. 22/2',
+    'Озон Ноябрьск': 'ООО «Интернет Решения» ЯНАО, г. Ноябрьск, промузел Пелей, 12-й проезд, панель XIV',
+    'Озон Тагил': 'ООО «Интернет Решения» г. Нижний Тагил, Свердловское шоссе, д. 65',
+    'Озон Тюмень': 'ООО «Интернет Решения» г. Тюмень, ул. 30 лет Победы',
+    'Озон Миасс': 'ООО «Интернет Решения» г. Миасс, ул. 60 лет Октября, стр. 1/1',
+    'Озон Челябинск': 'ООО «Интернет Решения» г. Челябинск, ул. Линейная, д. 59/1',
+    'Озон Екатеринбург Логопарк': 'ООО «Интернет Решения» г. Екатеринбург, логопарк Кольцовский, 15',
+    'Озон Екатеринбург Черняховского': 'ООО «Интернет Решения» г. Екатеринбург, ул. Черняховского, д. 104',
+    'Лента Тольятти': 'Самарская обл, г. Тольятти, ул. Южное шоссе, д. 4',
+    'КБ Магнитогорск': 'РЦ ООО «Оазис» Челябинская обл, г. Магнитогорск, ул. Комсомольская, д. 132',
+    'КБ Казань': 'РЦ ООО «Оазис» Республика Татарстан, Лаишевский муниципальный район, Столбищенское с.п., ул. Взлетная, д. 28',
+    'КБ Чита': 'РЦ ООО «Оазис» Забайкальский край, г. Чита, ул. Автостроителей, д. 10',
+    'КБ Артем': 'РЦ ООО «Оазис» Приморский край, Артемовский г.о., г. Артем, ул. 2-я Рабочая, д. 162, корп. 3',
+    'КБ Пенза': 'РЦ ООО «Автотранс» г. Пенза, ул. Аустрина, земельный участок 168У',
+    'КБ Хабаровск': 'РЦ ООО «Автотранс» Хабаровский край, г. Хабаровск, ул. Шкотова, д. 15А',
+    'КБ РЦ Пермь': 'РЦ ООО «Автотранс» Пермский край, Пермский м.о., Двуреченское с.п., примерно в 0,99 км по направлению на север от ориентира д. Устиново, ул. Героя, д. 21',
+    'КБ Екатеринбург (Серовский тракт)': 'РЦ ООО «Абсолют» 620000, Свердловская обл, г. Екатеринбург, Серовский тракт 11 км, стр. 3А',
+    'КБ Екатеринбург (Оазис)': 'РЦ ООО «Оазис» г. Екатеринбург, ЕКАД 5 км., стр. 6/14',
+    'КБ Копейск': 'ООО «Оазис» Челябинская обл, г. Копейск, ул. Логопарковая, д. 1А',
+    'КБ Челябинск': 'РЦ ООО «Абсолют» Челябинская обл, г. Челябинск, Копейское шоссе, д. 1П',
+    'КБ Уфа': 'РЦ ООО «Оазис» 450028, Республика Башкортостан, г. Уфа, ул. Гвардейская, д. 57/1А литера А1, пом. 172',
+    'КБ Оренбург': 'РЦ ООО «Прометей» Оренбургская обл, г. Оренбург, ул. Тихая, зд. 1/1',
+    'КБ Ижевск': 'РЦ ООО «Прометей» Удмуртская республика, Завьяловский район, территория Складская, зд. 1/1',
+    'КБ Барнаул': 'РЦ ООО «Оазис» Алтайский край, г. Барнаул, ул. Мамонтова, д. 208',
+    'КБ Омск': 'РЦ ООО «Оазис» г. Омск, ул. Айвазовского, д. 31',
+    'КБ Новосибирск': 'РЦ ООО «Оазис» Новосибирская обл., Новосибирский район, Толмачевский сельсовет, платформа 3307 км, д. 19К1/1',
+    'КБ Калининград': 'РЦ ООО «Прометей» Калининградская обл, г. Калининград, Большая Окружная 4-я, д. 102, корп. 1',
+    'Башнефть': 'ООО «Башнефть-Розница»',
+    'Ашан': 'ООО «Ашан»',
+    'Почта России': 'АО «Почта России»'
+}
+
+ADDRESS_DIRECTORY = {
+    'Озон Сургут': 'г. Сургут, Нефтеюганское ш., д. 22/2',
+    'Озон Ноябрьск': 'г. Ноябрьск, промузел Пелей, 12-й проезд, панель XIV',
+    'Озон Тагил': 'г. Нижний Тагил, Свердловское ш., д. 65',
+    'Озон Тюмень': 'г. Тюмень, ул. 30 лет Победы',
+    'Озон Миасс': 'г. Миасс, ул. 60 лет Октября, стр. 1/1',
+    'Озон Челябинск': 'г. Челябинск, ул. Линейная, д. 59/1',
+    'Озон Екатеринбург Логопарк': 'г. Екатеринбург, логопарк Кольцовский, 15',
+    'Озон Екатеринбург Черняховского': 'г. Екатеринбург, ул. Черняховского, д. 104',
+    'Лента Тольятти': 'Самарская обл, г. Тольятти, ул. Южное шоссе, д. 4',
+    'Ашан Засечное': 'с. Засечное, ул. Мясницкая, д. 4',
+    'Ашан Пенза': 'г. Пенза, ул. Антонова, д. 78',
+    'Башнефть Курган 1': 'г. Курган, пр. Конституции, д. 26',
+    'Башнефть Курган 2': 'г. Курган, ул. Машиностроителей, д. 36А',
 }
 
 CONTRACT_TYPES = {
@@ -75,9 +120,9 @@ CONTRACT_TYPES = {
         'name': 'Договор Сити Менедж Гос',
         'parts': ['Договор_Сити_Менедж_Гос.html', 'СМ_Приложение_1_Гос.html', 'СМ_Приложение_2.html']
     },
-    'city_manage_ozon': {
-        'name': 'Договор Сити Менедж Озон',
-        'parts': ['Договор_Сити_Менедж_Озон.html', 'СМ_Приложение_1_Озон.html', 'СМ_Приложение_2.html']
+    'city_manage_universal': {
+        'name': 'Договор Сити Менедж Универсал',
+        'parts': ['Договор_Сити_Менедж_Универсал.html', 'СМ_Приложение_1_Универсал.html', 'СМ_Приложение_2.html']
     },
     'city_manage_perekrestok': {
         'name': 'Договор Сити Менедж Перекрёсток',
@@ -148,6 +193,24 @@ def get_contract_by_id(contract_id):
         logger.error(f"Ошибка получения договора: {e}")
         return None
 
+def html_to_docx(html_content, contract_type_name):
+    """Конвертирует HTML в DOCX"""
+    try:
+        logger.info("Конвертация HTML → DOCX")
+        document = Document()
+        parser = HtmlToDocx()
+        parser.add_html_to_document(html_content, document)
+        
+        docx_file = BytesIO()
+        document.save(docx_file)
+        docx_file.seek(0)
+        
+        logger.info("Конвертация завершена")
+        return docx_file
+    except Exception as e:
+        logger.error(f"Ошибка конвертации: {e}")
+        raise
+
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -191,6 +254,34 @@ def view_contract(contract_id):
         return contract[3]
     return "Договор не найден", 404
 
+@app.route('/download/<int:contract_id>')
+@login_required
+def download_contract(contract_id):
+    """Скачивание в DOCX"""
+    try:
+        contract = get_contract_by_id(contract_id)
+        if not contract:
+            return "Договор не найден", 404
+        
+        contract_type = contract[1]
+        html_content = contract[3]
+        created_at = contract[6]
+        
+        contract_type_name = CONTRACT_TYPES.get(contract_type, {}).get('name', 'Договор')
+        filename = f"{contract_type_name}_{created_at.replace(':', '-').replace(' ', '_')}.docx"
+        
+        docx_file = html_to_docx(html_content, contract_type_name)
+        
+        return send_file(
+            docx_file,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        logger.error(f"Ошибка скачивания: {e}")
+        return f"Ошибка: {str(e)}", 500
+
 def clean_html(text):
     text = re.sub(r'```html\s*', '', text, flags=re.IGNORECASE)
     text = re.sub(r'```\s*', '', text)
@@ -208,7 +299,7 @@ def clean_html(text):
 @login_required
 def generate_contract():
     try:
-        logger.info("=== НАЧАЛО ГЕНЕРАЦИИ ДОГОВОРА ===")
+        logger.info("=== НАЧАЛО ГЕНЕРАЦИИ ===")
         
         data = request.json
         contract_type = data.get('contract_type')
@@ -216,27 +307,20 @@ def generate_contract():
         files_data = data.get('files', [])
         use_sonnet = data.get('use_sonnet', False)
         
-        logger.info(f"Тип договора: {contract_type}")
-        logger.info(f"Модель: {'Sonnet' if use_sonnet else 'Haiku'}")
-        logger.info(f"Длина входных данных: {len(user_input)} символов")
-        logger.info(f"Количество файлов: {len(files_data)}")
+        logger.info(f"Тип: {contract_type}, Модель: {'Sonnet' if use_sonnet else 'Haiku'}")
+        logger.info(f"Данные: {len(user_input)} символов, Файлов: {len(files_data)}")
 
         if not contract_type or not user_input:
-            logger.error("Не указан тип договора или данные")
-            return jsonify({'error': 'Не указан тип договора или данные'}), 400
+            return jsonify({'error': 'Не указан тип или данные'}), 400
 
-        if not API_KEY or API_KEY == "":
-            logger.error("API ключ не установлен!")
-            return jsonify({'error': 'API ключ Claude не настроен'}), 500
-
-        logger.info(f"API ключ присутствует: {API_KEY[:20]}...")
+        if not API_KEY:
+            return jsonify({'error': 'API ключ не настроен'}), 500
 
         model = MODEL_SONNET if use_sonnet else MODEL_HAIKU
         templates_dir = Path('contracts_templates')
         contract_config = CONTRACT_TYPES.get(contract_type)
         
         if not contract_config:
-            logger.error(f"Неизвестный тип договора: {contract_type}")
             return jsonify({'error': 'Неизвестный тип договора'}), 400
 
         logger.info("Загрузка шаблонов...")
@@ -245,121 +329,86 @@ def generate_contract():
             template_path = templates_dir / part_file
             if template_path.exists():
                 with open(template_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-                    template_parts.append(content)
-                    logger.info(f"Загружен: {part_file} ({len(content)} символов)")
+                    template_parts.append(f.read())
             else:
-                logger.error(f"Файл не найден: {template_path}")
                 return jsonify({'error': f'Шаблон не найден: {part_file}'}), 500
 
-        if not template_parts:
-            logger.error("Не удалось загрузить ни одного шаблона")
-            return jsonify({'error': 'Шаблоны не найдены'}), 500
-
-        logger.info(f"Загружено шаблонов: {len(template_parts)}")
+        logger.info(f"Загружено: {len(template_parts)} шаблонов")
 
         current_date = datetime.now().strftime('%d.%m.%Y')
         system_prompt = SYSTEM_PROMPT.format(current_date=current_date)
 
-        # УЛУЧШЕННОЕ ФОРМИРОВАНИЕ КОНТЕНТА
         content = []
 
-        # ФАЙЛЫ СНАЧАЛА (приоритет!)
+        # ФАЙЛЫ
         if files_data:
-            content.append({
-                'type': 'text',
-                'text': f"""ПРИКРЕПЛЁННЫЕ ФАЙЛЫ ({len(files_data)} шт.):
-Внимательно изучи все файлы - там могут быть реквизиты, контакты, печати, подписи.
-ПРИОРИТЕТ: Данные из файлов > текст пользователя."""
-            })
+            content.append({'type': 'text', 'text': f"ФАЙЛЫ ({len(files_data)} шт): Приоритет данных из файлов!"})
 
         for i, file_data in enumerate(files_data):
             file_type = file_data.get('type', '')
             file_name = file_data.get('name', f'file_{i+1}')
-            logger.info(f"Файл {i+1}: {file_name} ({file_type})")
             
-            content.append({
-                'type': 'text',
-                'text': f"ФАЙЛ {i+1}: {file_name}"
-            })
+            content.append({'type': 'text', 'text': f"ФАЙЛ {i+1}: {file_name}"})
             
             if 'image' in file_type:
                 content.append({
                     'type': 'image',
-                    'source': {
-                        'type': 'base64',
-                        'media_type': file_type,
-                        'data': file_data.get('data', '')
-                    }
+                    'source': {'type': 'base64', 'media_type': file_type, 'data': file_data.get('data', '')}
                 })
             elif 'pdf' in file_type:
                 content.append({
                     'type': 'document',
-                    'source': {
-                        'type': 'base64',
-                        'media_type': 'application/pdf',
-                        'data': file_data.get('data', '')
-                    }
+                    'source': {'type': 'base64', 'media_type': 'application/pdf', 'data': file_data.get('data', '')}
                 })
+            elif any(ext in file_type for ext in ['text', 'document', 'csv']):
+                try:
+                    text_content = base64.b64decode(file_data.get('data', '')).decode('utf-8')
+                    content.append({'type': 'text', 'text': f"СОДЕРЖИМОЕ:\n{text_content}"})
+                except:
+                    logger.warning(f"Не удалось декодировать {file_name}")
 
-        # ТЕПЕРЬ ШАБЛОНЫ И ДАННЫЕ
-        # Формируем чёткую структуру с разделителями
+        # ШАБЛОНЫ
         template_text = ""
         for i, part in enumerate(template_parts):
-            template_text += f"\n\n{'='*80}\n"
-            template_text += f"ЧАСТЬ {i+1} из {len(template_parts)}: {contract_config['parts'][i]}\n"
-            template_text += f"{'='*80}\n\n"
-            template_text += part
+            template_text += f"\n\n{'='*80}\nЧАСТЬ {i+1}/{len(template_parts)}: {contract_config['parts'][i]}\n{'='*80}\n\n{part}"
         
-        # УЛУЧШЕННЫЙ USER MESSAGE
-        user_message = f"""ЗАДАЧА: Составь договор, заполнив ВСЕ части шаблона данными.
+        objects_ref = json.dumps(OBJECTS_DIRECTORY, ensure_ascii=False, indent=2)
+        addresses_ref = json.dumps(ADDRESS_DIRECTORY, ensure_ascii=False, indent=2)
+        
+        user_message = f"""ЗАДАЧА: Заполни ВСЕ {len(template_parts)} части шаблона.
 
-{'='*80}
-СТРУКТУРА ДОКУМЕНТА - ДОЛЖНЫ БЫТЬ ВСЕ ЧАСТИ:
-{'='*80}
-{chr(10).join([f"{i+1}. {part}" for i, part in enumerate(contract_config['parts'])])}
-
-{'='*80}
-HTML-ШАБЛОНЫ:
-{'='*80}
+ШАБЛОНЫ:
 {template_text}
 
-{'='*80}
-ДАННЫЕ ОТ ПОЛЬЗОВАТЕЛЯ:
-{'='*80}
+ДАННЫЕ:
 {user_input}
 
-{'='*80}
-ПРАВИЛА ЗАПОЛНЕНИЯ:
-{'='*80}
-1. СТРУКТУРА: Верни ВСЕ {len(template_parts)} части документа в ОДНОМ HTML
-2. ПЛЕЙСХОЛДЕРЫ: Замени <!--FIELD:Имя--><span data-ph="Имя">[Имя]</span><!--/FIELD--> на данные
-3. ПРИОРИТЕТ: Файлы → Текст пользователя → Автозаполнение
-4. НЕ ПУТАЙ: Реквизиты ≠ Контакты, Услуги ≠ Адреса
-5. ФОРМАТ УСЛУГ:
-   - Одна услуга = одно предложение с точкой
-   - Тире: " – " (длинное, с пробелами)
-   - Верхний регистр: м³ (не м3), м² (не м2)
-   - Пример: "Механизированная уборка снега погрузчиком – 3000 руб/час с НДС 20%. Вывоз снега 20 м³ – 5100 руб/рейс с НДС 20%."
+СПРАВОЧНИКИ:
+Объекты: {objects_ref}
+Адреса: {addresses_ref}
 
-{'='*80}
-ПРОВЕРКА ПЕРЕД ОТПРАВКОЙ:
-{'='*80}
-✓ Все {len(template_parts)} части на месте?
-✓ Данные из файлов использованы?
-✓ Услуги в правильном формате (тире, м³)?
-✓ Реквизиты из файла, не выдуманные?
+ПРАВИЛА:
+1. ВСЕ {len(template_parts)} части в одном HTML
+2. Приоритет: Файлы → Текст → Справочники
+3. Ответственное лицо: ОБЯЗАТЕЛЬНО "ФИО, тел. +7 XXX XXX-XX-XX, e-mail: xxx@xxx.ru"
+4. E-mail ответственного:
+   - Сити Менедж: если "mitkina.citymanage@yandex.ru" → пусто, иначе ", {{email}}"
+   - Скориченко: всегда вставляй
+5. Наименование объекта (Универсал):
+   Озон → "Озон", КБ → "КБ РЦ", Башнефть → "Башнефть", Ашан → "Ашан", Почта России → "Почта России"
+6. Услуги: "Название – цена. " (тире длинное с пробелами, м³ не м3)
 
-{'='*80}
+ПРОВЕРЬ:
+✓ Все {len(template_parts)} части?
+✓ Файлы использованы?
+✓ Услуги правильно (тире, м³)?
+✓ Ответственное с e-mail?
 
-{f"СПРАВОЧНИК (только для Озон):{chr(10)}" + json.dumps(OZON_DIRECTORY, ensure_ascii=False, indent=2) if 'ozon' in contract_type else ''}
-
-ВАЖНО: Верни ВЕСЬ документ (все {len(template_parts)} части) БЕЗ markdown блоков.
-Начни с первого HTML тега."""
+Верни ВЕСЬ документ БЕЗ markdown. Начни с HTML тега."""
 
         content.append({'type': 'text', 'text': user_message})
 
-        logger.info("Отправка запроса к Claude API...")
+        logger.info("→ Claude API")
         
         try:
             client = anthropic.Anthropic(api_key=API_KEY)
@@ -367,33 +416,29 @@ HTML-ШАБЛОНЫ:
 
             response = client.messages.create(
                 model=model,
-                max_tokens=16000,  # Увеличили для больших документов
+                max_tokens=16000,
                 system=system_prompt,
                 messages=messages,
-                temperature=0.2  # Меньше креативности, больше точности
+                temperature=0.2
             )
 
-            logger.info("Получен ответ от Claude API")
+            logger.info("← Ответ получен")
             
             assistant_response = response.content[0].text
-            logger.info(f"Длина ответа: {len(assistant_response)} символов")
-
             input_tokens = response.usage.input_tokens
             output_tokens = response.usage.output_tokens
-            logger.info(f"Токены: вход={input_tokens}, выход={output_tokens}")
             
             if model == MODEL_HAIKU:
-                cost = (input_tokens * 0.25 / 1000000) + (output_tokens * 1.25 / 1000000)
+                cost = (input_tokens * 0.25 + output_tokens * 1.25) / 1000000
             else:
-                cost = (input_tokens * 3 / 1000000) + (output_tokens * 15 / 1000000)
+                cost = (input_tokens * 3 + output_tokens * 15) / 1000000
 
-            logger.info(f"Стоимость: ${cost:.4f}")
+            logger.info(f"Токены: {input_tokens}/{output_tokens}, Цена: ${cost:.4f}")
 
             if assistant_response.strip().startswith('{'):
                 try:
                     json_data = json.loads(assistant_response)
                     if 'question' in json_data:
-                        logger.info("Claude задал вопрос")
                         return jsonify({
                             'status': 'question',
                             'question': json_data['question'],
@@ -405,45 +450,42 @@ HTML-ШАБЛОНЫ:
                     pass
 
             clean_html_text = clean_html(assistant_response)
-            logger.info(f"После очистки: {len(clean_html_text)} символов")
 
             if len(clean_html_text) < 1000:
-                logger.error(f"Ответ слишком короткий: {len(clean_html_text)} символов")
-                return jsonify({
-                    'error': 'Получен слишком короткий ответ. Попробуйте модель Sonnet или добавьте больше данных.',
-                    'debug': assistant_response[:500]
-                }), 500
+                return jsonify({'error': 'Ответ слишком короткий', 'debug': assistant_response[:500]}), 500
 
-            logger.info("Сохранение в историю...")
             save_to_history(contract_type, user_input, clean_html_text, model, cost)
+            
+            # Получаем ID последнего сохранённого договора
+            conn = sqlite3.connect('contracts_history.db')
+            c = conn.cursor()
+            c.execute('SELECT last_insert_rowid()')
+            contract_id = c.fetchone()[0]
+            conn.close()
 
             logger.info("=== УСПЕШНО ===")
             return jsonify({
                 'status': 'success',
                 'html': clean_html_text,
+                'contract_id': contract_id,
                 'cost': round(cost, 4),
                 'model': model,
                 'tokens': {'input': input_tokens, 'output': output_tokens}
             })
 
         except anthropic.AuthenticationError as e:
-            logger.error(f"Ошибка аутентификации Claude API: {str(e)}")
-            return jsonify({'error': f'Ошибка API ключа Claude: {str(e)}'}), 500
-        
+            return jsonify({'error': f'Ошибка API ключа: {str(e)}'}), 500
         except anthropic.APIError as e:
-            logger.error(f"Ошибка Claude API: {str(e)}")
-            return jsonify({'error': f'Ошибка Claude API: {str(e)}'}), 500
+            return jsonify({'error': f'Ошибка API: {str(e)}'}), 500
 
     except Exception as e:
-        logger.error(f"КРИТИЧЕСКАЯ ОШИБКА: {str(e)}")
+        logger.error(f"ОШИБКА: {e}")
         logger.error(traceback.format_exc())
-        return jsonify({'error': f'Ошибка сервера: {str(e)}'}), 500
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
 
-# Инициализация БД
 init_db()
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 5000))
-    logger.info(f"Запуск приложения на порту {port}")
-    logger.info(f"API ключ установлен: {'Да' if API_KEY else 'НЕТ'}")
+    logger.info(f"Порт: {port}, API: {'Да' if API_KEY else 'НЕТ'}")
     app.run(host='0.0.0.0', port=port, debug=False)
