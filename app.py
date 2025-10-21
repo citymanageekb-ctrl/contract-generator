@@ -318,6 +318,14 @@ def generate_contract():
 
         model = MODEL_SONNET if use_sonnet else MODEL_HAIKU
         templates_dir = Path('contracts_templates')
+        
+        logger.info(f"Папка шаблонов: {templates_dir.absolute()}")
+        logger.info(f"Существует: {templates_dir.exists()}")
+        
+        if not templates_dir.exists():
+            logger.error(f"❌ Папка contracts_templates не найдена!")
+            return jsonify({'error': 'Папка с шаблонами не найдена'}), 500
+        
         contract_config = CONTRACT_TYPES.get(contract_type)
         
         if not contract_config:
@@ -327,10 +335,20 @@ def generate_contract():
         template_parts = []
         for part_file in contract_config['parts']:
             template_path = templates_dir / part_file
+            logger.info(f"Ищу шаблон: {template_path}")
+            logger.info(f"Существует: {template_path.exists()}")
+            
             if template_path.exists():
-                with open(template_path, 'r', encoding='utf-8') as f:
-                    template_parts.append(f.read())
+                try:
+                    with open(template_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        template_parts.append(content)
+                        logger.info(f"✅ Загружен: {part_file} ({len(content)} символов)")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка чтения {part_file}: {e}")
+                    return jsonify({'error': f'Ошибка чтения шаблона {part_file}: {str(e)}'}), 500
             else:
+                logger.error(f"❌ Файл не найден: {template_path}")
                 return jsonify({'error': f'Шаблон не найден: {part_file}'}), 500
 
         logger.info(f"Загружено: {len(template_parts)} шаблонов")
