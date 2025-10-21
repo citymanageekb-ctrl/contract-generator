@@ -8,104 +8,199 @@
   <meta name="robots" content="noindex,nofollow">
 <title>Договор оказания услуг</title>
 <style>
-  @page {
-    size: A4 portrait;
-    margin: 1cm 1cm 1cm 1.5cm;
-  }
-  @page horizontal {
-    size: A4 landscape;
-    margin: 1cm 1cm 1cm 2cm;
-  }
-  body {
-    font-family: "Times New Roman", serif;
-    font-size: 11pt;
-    line-height: 1.0;
-    margin: 0; /* управляем полями через @page */
-  }
-  p {
-    margin: 0;
-    padding: 0;
-    text-align: justify;
-  }
+body {
+  font-family: "Times New Roman", serif;
+  font-size: 11pt;
+  line-height: 1.0;
+}
+@page {
+  margin-top: 1cm;
+  margin-bottom: 1cm;
+  margin-left: 1.5cm;
+  margin-right: 1cm;
+}
+p {
+  margin: 0;
+  padding: 0;
+  text-align: justify;
+}
+h1 {
+  text-align: center;
+  font-size: 11pt;
+  font-weight: bold;
+  margin: 0 0 5px 0;
+}
+h2 {
+  text-align: left;
+  font-size: 11pt;
+  font-weight: bold;
+  margin: 0 0 0 15px;
+}
+h3 {
+  text-align: center;
+  font-size: 11pt;
+  font-weight: bold;
+  margin: 0 0 0 0;
+}
+h4 {
+  text-align: center;
+  font-size: 18pt;
+  font-weight: bold;
+  font-style: italic;
+  margin: 0 0 0 0;
+}
+h5 {
+  text-align: center;
+  font-size: 18pt;
+  font-weight: bold;
+  margin: 0 0 0 0;
+}
+.header-row {
+  display: flex;
+  justify-content: space-between;
+}
+.underline {
+  text-decoration: underline;
+}
+.empty-line {
+  height: 15px;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10px 0;
+}
+td {
+  border: 1px solid black;
+  padding: 5px;
+  padding-left: 10px;
+  vertical-align: top;
+}
+.right-align {
+  text-align: right;
+}
+.signature-table td {
+  border: none !important;
+  padding: 0px;
+}
 
-  /* Заголовки — размеры/выравнивание сохранены */
-  h1 {
-    text-align: center;
-    font-size: 11pt;
-    font-weight: bold;
-    margin: 0 0 5px 0;
-  }
-  h2 {
-    text-align: left;
-    font-size: 11pt;
-    font-weight: bold;
-    margin: 0 0 0 15px;
-  }
-  h3 {
-    text-align: center;
-    font-size: 11pt;
-    font-weight: bold;
-    margin: 0;
-  }
-  h4 {
-    text-align: center;
-    font-size: 18pt;
-    font-weight: bold;
-    font-style: italic;
-    margin: 0;
-  }
-  h5 {
-    text-align: center;
-    font-size: 18pt;
-    font-weight: bold;
-    margin: 0;
-  }
-
-  /* Служебные классы */
-  .header-row {
-    display: flex;
-    justify-content: space-between;
-  }
-  .underline {
-    text-decoration: underline;
-  }
-
-  .empty-line {
-    height: 15px;
-  }
-  .right-align {
-    text-align: right;
-  }
-  .landscape-page {
-    page: horizontal;
-    page-break-before: always;
-  }
-
-  /* Таблицы (глобально) */
-  table {
-    width: 100%;
-    border-collapse: collapse;
-    margin: 10px 0;
-  }
-  td {
-    border: 1px solid black;
-    padding: 5px 5px 5px 10px;
-    vertical-align: top;
-  }
-
-  /* Таблица подписей в договоре — без рамок */
-  .signature-table td {
-    border: none !important;
-    padding: 0;
-  }
-
-  /* Мелкий шрифт Helvetica для форм X5 */
-  .helv-9 { font-size: 9pt; font-family: "Helvetica Neue", Arial, sans-serif; line-height: 1.1; }
-  .helv-10 { font-size: 10pt; font-family: "Helvetica Neue", Arial, sans-serif; }
-  .helv-12 { font-size: 12pt; font-family: "Helvetica Neue", Arial, sans-serif; }
-
-  /* Анти-артефакты печати */
-  tr, td, table, p, div { page-break-inside: avoid; }
+.h1-1 {
+  text-align: center;
+  font-size: 12pt;
+  font-weight: bold;
+  margin: 0 0 0 0;
+}
+.empty-line12 {
+  height: 16px;
+}
+.empty-line8 {
+  height: 10.667px;
+}
+.h2-2 {
+  text-align: center;
+  font-size: 8pt;
+  font-weight: normal;
+  margin: 0 0 0 0;
+}
+.h3-3 {
+  text-align: right;
+  font-size: 12pt;
+  font-weight: normal;
+  margin: 0 0 0 0;
+}
+.h4-4 {
+  text-align: right;
+  font-size: 8pt;
+  font-weight: normal;
+  margin: 0 70px 0 0;
+}
+.empty-line14 {
+  height: 18.667px;
+}
+.t1 {
+  font-size: 14pt;
+  font-weight: bold;
+  margin: 0 0 0 0;
+  border-bottom: 2px solid black;
+  display: inline-block; 
+}
+.t2 {
+  text-align: left;
+  font-size: 8pt;
+  font-weight: normal;
+  margin: 10px 0 0 95px;
+}
+.t3 {
+  text-align: left;
+  font-size: 8pt;
+  font-weight: normal;
+  margin: 0 0 0 180px;
+}
+.field {
+  border-bottom: 1px solid #000;
+  display: inline-block;
+  min-width: 150px;
+  margin: 0 1px;
+}
+.field-long {
+  border-bottom: 1px solid #000;
+  display: inline-block;
+  min-width: 500px;
+  margin: 0 1px;
+}
+.empty-line10933 {
+  height: 10.933px;
+}
+.empty-line1655 {
+  height: 22.067px;
+}
+.section {
+   margin: 27.333px 0;
+}
+.section2 {
+   margin: 25.933px 0;
+}
+.field-block {
+  border-bottom: 1px solid #000;
+  width: 80%;
+  margin: 10px auto 0 auto;
+  min-height: 20px;
+}
+.t4 {
+  text-align: center;
+  font-size: 12pt;
+  font-weight: normal;
+  margin: 3px 0 0 0;
+}
+.t5 {
+  text-align: left;
+  font-size: 8pt;
+  font-weight: normal;
+  margin: 12px 0 0 150px;
+}
+.signature-line {
+   display: inline-block;
+   min-width: 180px;
+   border-bottom: 1px solid #000;
+   margin: 0 0;
+}
+.t6 {
+  text-align: left;
+  font-size: 8pt;
+  font-weight: normal;
+  margin: 12px 0 0 140px;
+}
+.p1 { 
+  margin: 1px 0;
+  font-family: Calibri, sans-serif;
+  font-style: italic;
+}
+.signature-line1 {
+   display: inline-block;
+   min-width: 120px;
+   border-bottom: 1px solid #000;
+   margin: 0 0;
+}       
 [data-ph] {
       background: none !important;
       color: inherit !important;
