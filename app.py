@@ -226,11 +226,30 @@ def extract_text_from_image(file_bytes, file_type):
     return None
 
 def extract_text_from_docx(file_bytes):
-    """Извлекает текст из DOCX"""
+    """Извлекает текст из DOCX включая таблицы"""
     try:
         doc = Document(BytesIO(file_bytes))
-        text = '\n'.join([paragraph.text for paragraph in doc.paragraphs if paragraph.text.strip()])
-        return text.strip()
+        text_parts = []
+        
+        # Извлекаем текст из параграфов
+        for paragraph in doc.paragraphs:
+            if paragraph.text.strip():
+                text_parts.append(paragraph.text.strip())
+        
+        # ВАЖНО: Извлекаем текст из таблиц!
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = []
+                for cell in row.cells:
+                    cell_text = cell.text.strip()
+                    if cell_text:
+                        row_text.append(cell_text)
+                if row_text:
+                    # Соединяем ячейки через ": " для лучшей читаемости
+                    text_parts.append(": ".join(row_text))
+        
+        full_text = '\n'.join(text_parts)
+        return full_text.strip()
     except Exception as e:
         logger.error(f"Ошибка извлечения текста из DOCX: {e}")
         return ""
@@ -784,6 +803,26 @@ def generate_contract():
 
             if len(clean_html_text) < 1000:
                 return jsonify({'error': 'Ответ слишком короткий', 'debug': assistant_response[:500]}), 500
+
+            # ПРОВЕРКА: Остались ли критические плейсхолдеры?
+            critical_placeholders = []
+            if '[Реквизиты]' in clean_html_text:
+                critical_placeholders.append('Реквизиты')
+            if '[Юр. лицо]' in clean_html_text or '[Юридическое лицо]' in clean_html_text:
+                critical_placeholders.append('Юридическое лицо')
+            if '[Фамилия И.О.]' in clean_html_text or '[Фамилия И.О. исполнителя]' in clean_html_text:
+                critical_placeholders.append('Фамилия И.О. исполнителя')
+            
+            # Если есть незаполненные критические поля - возвращаем как вопрос
+            if critical_placeholders:
+                logger.warning(f"⚠️ Незаполненные критические поля: {critical_placeholders}")
+                return jsonify({
+                    'status': 'question',
+                    'question': f"Договор сгенерирован, но не хватает следующих данных",
+                    'missing_fields': critical_placeholders,
+                    'conversation': messages + [{'role': 'assistant', 'content': assistant_response}],
+                    'cost': round(cost, 4)
+                })
 
             save_to_history(contract_type, user_input, clean_html_text, model, cost)
             
