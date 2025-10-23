@@ -1,553 +1,774 @@
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Генератор договоров - Сити Менедж Снег</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+"""
+Сити Менедж Снег - Генератор договоров
+Версия: 1.6 - Универсал, расширенные справочники, экспорт в DOCX
+"""
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
+from flask import Flask, render_template, request, jsonify, send_file, session, redirect, url_for
+from functools import wraps
+import anthropic
+import os
+import json
+import base64
+from datetime import datetime
+from pathlib import Path
+import sqlite3
+import re
+import traceback
+import logging
+from io import BytesIO
+from werkzeug.security import check_password_hash, generate_password_hash
 
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-        }
+# Для конвертации HTML в DOCX
+from docx import Document
+from htmldocx import HtmlToDocx
 
-        .header {
-            background: white;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
+# Для извлечения текста из файлов
+from PyPDF2 import PdfReader
+from PIL import Image
 
-        .header h1 {
-            font-size: 24px;
-            color: #667eea;
-        }
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-        .header-buttons {
-            display: flex;
-            gap: 10px;
-        }
+app = Flask(__name__)
+app.secret_key = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
-        .btn {
-            padding: 10px 20px;
-            border-radius: 8px;
-            border: none;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-            text-decoration: none;
-            display: inline-block;
-        }
+API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+APP_PASSWORD = os.getenv("APP_PASSWORD", "sneg2025")
 
-        .btn-secondary {
-            background: #f5f5f5;
-            color: #333;
-        }
+MODEL_HAIKU = "claude-3-5-haiku-20241022"
+MODEL_SONNET = "claude-sonnet-4-20250514"
 
-        .btn-secondary:hover {
-            background: #e0e0e0;
-        }
+# УЛУЧШЕННЫЙ СИСТЕМНЫЙ ПРОМПТ
+SYSTEM_PROMPT = """Ты - эксперт по составлению юридических договоров в формате HTML.
 
-        .main-content {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-        }
+КРИТИЧЕСКИ ВАЖНО:
+1. СОХРАНЯЙ ВСЮ СТРУКТУРУ - все части, приложения, разделы
+2. ПРИОРИТЕТ ДАННЫХ: файлы (изображения/PDF) > текст пользователя > справочники > автозаполнение
+3. ПРОВЕРКА ДАННЫХ: Если НЕ ХВАТАЕТ обязательных данных → верни JSON с вопросом
+4. ТОЧНО следуй форматированию
 
-        .card {
-            background: white;
-            border-radius: 12px;
-            padding: 25px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.2);
-        }
+ОБЯЗАТЕЛЬНАЯ ПРОВЕРКА ПЕРЕД ЗАПОЛНЕНИЕМ:
+КРИТИЧЕСКИ ВАЖНО: Если прикреплены файлы - ОБЯЗАТЕЛЬНО извлеки из них ВСЕ возможные данные ПЕРЕД проверкой недостающих полей!
 
-        .card h2 {
-            color: #667eea;
-            margin-bottom: 20px;
-            font-size: 20px;
-        }
+Запрашивай только те данные, которых:
+1. НЕТ в прикреплённых файлах
+2. НЕТ в тексте пользователя  
+3. НЕТ в справочниках
 
-        .form-group {
-            margin-bottom: 20px;
-        }
+НЕ запрашивай данные которые МОГУТ БЫТЬ в файлах:
+- Реквизиты (ИНН, КПП, ОГРН, р/с, банк и т.д.)
+- Фамилия И.О. исполнителя
+- Юридическое лицо исполнителя
+- Печати, подписи
 
-        label {
-            display: block;
-            margin-bottom: 8px;
-            font-weight: 600;
-            color: #333;
-        }
+Если данные есть в файлах → используй их!
+Если файлы прикреплены, но ты не можешь извлечь данные → заполни что можешь и оставь плейсхолдеры для остального.
 
-        select, textarea {
-            width: 100%;
-            padding: 12px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            font-size: 14px;
-            font-family: inherit;
-        }
+Только если критических данных НЕТ НИГДЕ → верни JSON:
+{{
+    "question": "Не хватает данных для заполнения договора",
+    "missing_fields": ["только те поля, которых точно нет ни в файлах, ни в тексте"]
+}}
 
-        select:focus, textarea:focus {
-            outline: none;
-            border-color: #667eea;
-        }
+ФОРМАТ УСЛУГ (СТРОГО):
+✅ ПРАВИЛЬНО: "Механизированная уборка снега погрузчиком – 3000 руб/час с НДС 20%. Вывоз снега 20 м³ – 5100 руб/рейс с НДС 20%."
+❌ НЕПРАВИЛЬНО: точка с запятой, двоеточие, короткий дефис, м3
 
-        textarea {
-            min-height: 200px;
-            resize: vertical;
-        }
+ПРАВИЛА:
+- Разделитель услуг: ". " (точка + пробел)
+- Тире между названием и ценой: " – " (длинное тире с пробелами)
+- Регистр: м³ (не м3), м² (не м2)
 
-        .file-upload {
-            border: 2px dashed #667eea;
-            border-radius: 8px;
-            padding: 30px;
-            text-align: center;
-            cursor: pointer;
-            transition: background-color 0.3s;
-        }
+ДАТА ЗАКЛЮЧЕНИЯ:
+- Извлекай из НОМЕРА договора в формате ДД.ММ.ГГГГ
+- Примеры: "20102025/1" → "20.10.2025", "01122024/5" → "01.12.2024"
 
-        .file-upload:hover {
-            background-color: #f5f5ff;
-        }
+ОТВЕТСТВЕННОЕ ЛИЦО СО СТОРОНЫ ЗАКАЗЧИКА:
+- ОБЯЗАТЕЛЬНО должно содержать: ФИО + телефон + e-mail
+- ФОРМАТ ВСТАВКИ: "ФИО телефон, e-mail" (БЕЗ слов "тел.", "e-mail:")
+- ✅ ПРАВИЛЬНО: "Иванов Иван Иванович 89123456789, ivanov@mail.ru"
+- ❌ НЕПРАВИЛЬНО: "Иванов Иван Иванович, тел. 89123456789, e-mail: ivanov@mail.ru"
+- Если нет всех трёх частей → запроси у пользователя
 
-        .file-upload input {
-            display: none;
-        }
+ОТВЕТСТВЕННОЕ ЛИЦО СО СТОРОНЫ ИСПОЛНИТЕЛЯ:
+- Вставляй ТОЧНО как дал пользователь (телефон без "тел.")
+- НЕ проверяй наличие e-mail (его может не быть)
+- Примеры: "89025937703" или "Митькина О.А. 89025937703"
 
-        .files-list {
-            margin-top: 15px;
-        }
+E-MAIL ОТВЕТСТВЕННОГО ЛИЦА (отдельное поле):
+- Это e-mail из "Ответственного лица со стороны ЗАКАЗЧИКА"
+- Правило для Сити Менедж:
+  * Если email заказчика = "mitkina.citymanage@yandex.ru" → оставь поле ПУСТЫМ
+  * Если email заказчика ≠ "mitkina.citymanage@yandex.ru" → вставь ", EMAIL"
+- Правило для Скориченко: ВСЕГДА вставляй ", EMAIL"
+- ✅ Примеры:
+  * email = "ivanov@mail.ru" → вставь ", ivanov@mail.ru"
+  * email = "mitkina.citymanage@yandex.ru" И договор Сити Менедж → оставь ""
 
-        .file-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 10px;
-            background: #f5f5f5;
-            border-radius: 6px;
-            margin-bottom: 8px;
-        }
+РЕКВИЗИТЫ ИЗ ФАЙЛОВ:
+- КРИТИЧЕСКИ ВАЖНО: ПЕРВЫМ ДЕЛОМ изучай текст извлечённый из файлов!
+- Текст из файлов будет в начале сообщения в блоке "ДАННЫЕ ИЗ ФАЙЛОВ"
+- Этот текст ПРИОРИТЕТНЕЕ всего остального!
+- Ищи и ИЗВЛЕКАЙ из этого текста: ИНН, КПП, ОГРН, р/с, банк, БИК, к/с, юридический адрес, название организации, ФИО директора
+- НЕ ИГНОРИРУЙ данные из файлов - они там СПЕЦИАЛЬНО для тебя извлечены!
+- Если в блоке "ДАННЫЕ ИЗ ФАЙЛОВ" есть реквизиты → ОБЯЗАТЕЛЬНО используй ИХ
+- НЕ ВЫДУМЫВАЙ реквизиты - только из файлов или из текста пользователя
+- Если в файлах нет конкретных данных → оставь [Реквизиты], но если файлы содержат хоть что-то - используй!
 
-        .btn-remove {
-            background: #ff4444;
-            color: white;
-            border: none;
-            padding: 5px 10px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 12px;
-        }
+ФАМИЛИЯ И.О. ИСПОЛНИТЕЛЯ:
+- Ищи ФИО директора/руководителя в тексте из блока "ДАННЫЕ ИЗ ФАЙЛОВ"
+- Обычно написано: "Директор: ...", "Генеральный директор: ...", "Руководитель: ...", или просто ФИО в реквизитах
+- Если нашёл в файлах → ОБЯЗАТЕЛЬНО используй
+- Если в файлах нет → оставь [Фамилия И.О.]
 
-        .btn-generate {
-            width: 100%;
-            padding: 14px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
+АДРЕС:
+- Используй справочник адресов если объект известен
+- Если объекта нет в справочнике → используй адрес из данных пользователя
+- Если адреса нет вообще → оставь [Адрес]
 
-        .btn-generate:hover:not(:disabled) {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
-        }
+НАИМЕНОВАНИЕ ОБЪЕКТА (для Сити Менедж Универсал, Сити Менедж Гос, Скориченко Гос):
+- ОБЯЗАТЕЛЬНО извлекай из текста пользователя или справочника объектов
+- ПРАВИЛА ОПРЕДЕЛЕНИЯ (проверяй текст пользователя):
+  * Если текст содержит "Озон" → вставь "Озон"
+  * Если текст содержит "КБ" → вставь "КБ РЦ"
+  * Если текст содержит "Башнефть" → вставь "Башнефть"
+  * Если текст содержит "Ашан" → вставь "Ашан"
+  * Если текст содержит "Почта России" → вставь "Почта России"
+  * Если текст содержит "Лента" → вставь "Лента"
+- Ищи эти ключевые слова в данных пользователя или в названии объекта из справочника
+- Если не нашёл ни одного совпадения → оставь [Наименование объекта]
 
-        .btn-generate:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
+СТРУКТУРА ОТВЕТА:
+- Если данных достаточно → верни ВЕСЬ HTML документ (все части)
+- Если данных НЕ хватает → верни JSON с missing_fields
+- НЕ используй markdown блоки (```html)
+- Начни сразу с <!DOCTYPE html> или {{
 
-        .result-area {
-            display: none;
-        }
+Текущая дата: {current_date}"""
 
-        .result-area.active {
-            display: block;
-        }
+# СПРАВОЧНИКИ
+OBJECTS_DIRECTORY = {
+    'Озон Сургут': 'ООО «Интернет Решения» г. Сургут, Нефтеюганское шоссе, д. 22/2',
+    'Озон Ноябрьск': 'ООО «Интернет Решения» ЯНАО, г. Ноябрьск, промузел Пелей, 12-й проезд, панель XIV',
+    'Озон Тагил': 'ООО «Интернет Решения» г. Нижний Тагил, Свердловское шоссе, д. 65',
+    'Озон Тюмень': 'ООО «Интернет Решения» г. Тюмень, ул. 30 лет Победы',
+    'Озон Миасс': 'ООО «Интернет Решения» г. Миасс, ул. 60 лет Октября, стр. 1/1',
+    'Озон Челябинск': 'ООО «Интернет Решения» г. Челябинск, ул. Линейная, д. 59/1',
+    'Озон Екатеринбург Логопарк': 'ООО «Интернет Решения» г. Екатеринбург, логопарк Кольцовский, 15',
+    'Озон Екатеринбург Черняховского': 'ООО «Интернет Решения» г. Екатеринбург, ул. Черняховского, д. 104',
+    'Лента Тольятти': 'Самарская обл, г. Тольятти, ул. Южное шоссе, д. 4',
+    'КБ Магнитогорск': 'РЦ ООО «Оазис» Челябинская обл, г. Магнитогорск, ул. Комсомольская, д. 132',
+    'КБ Казань': 'РЦ ООО «Оазис» Республика Татарстан, Лаишевский муниципальный район, Столбищенское с.п., ул. Взлетная, д. 28',
+    'КБ Чита': 'РЦ ООО «Оазис» Забайкальский край, г. Чита, ул. Автостроителей, д. 10',
+    'КБ Артем': 'РЦ ООО «Оазис» Приморский край, Артемовский г.о., г. Артем, ул. 2-я Рабочая, д. 162, корп. 3',
+    'КБ Пенза': 'РЦ ООО «Автотранс» г. Пенза, ул. Аустрина, земельный участок 168У',
+    'КБ Хабаровск': 'РЦ ООО «Автотранс» Хабаровский край, г. Хабаровск, ул. Шкотова, д. 15А',
+    'КБ РЦ Пермь': 'РЦ ООО «Автотранс» Пермский край, Пермский м.о., Двуреченское с.п., примерно в 0,99 км по направлению на север от ориентира д. Устиново, ул. Героя, д. 21',
+    'КБ Екатеринбург (Серовский тракт)': 'РЦ ООО «Абсолют» 620000, Свердловская обл, г. Екатеринбург, Серовский тракт 11 км, стр. 3А',
+    'КБ Екатеринбург (Оазис)': 'РЦ ООО «Оазис» г. Екатеринбург, ЕКАД 5 км., стр. 6/14',
+    'КБ Копейск': 'ООО «Оазис» Челябинская обл, г. Копейск, ул. Логопарковая, д. 1А',
+    'КБ Челябинск': 'РЦ ООО «Абсолют» Челябинская обл, г. Челябинск, Копейское шоссе, д. 1П',
+    'КБ Уфа': 'РЦ ООО «Оазис» 450028, Республика Башкортостан, г. Уфа, ул. Гвардейская, д. 57/1А литера А1, пом. 172',
+    'КБ Оренбург': 'РЦ ООО «Прометей» Оренбургская обл, г. Оренбург, ул. Тихая, зд. 1/1',
+    'КБ Ижевск': 'РЦ ООО «Прометей» Удмуртская республика, Завьяловский район, территория Складская, зд. 1/1',
+    'КБ Барнаул': 'РЦ ООО «Оазис» Алтайский край, г. Барнаул, ул. Мамонтова, д. 208',
+    'КБ Омск': 'РЦ ООО «Оазис» г. Омск, ул. Айвазовского, д. 31',
+    'КБ Новосибирск': 'РЦ ООО «Оазис» Новосибирская обл., Новосибирский район, Толмачевский сельсовет, платформа 3307 км, д. 19К1/1',
+    'КБ Калининград': 'РЦ ООО «Прометей» Калининградская обл, г. Калининград, Большая Окружная 4-я, д. 102, корп. 1',
+    'Башнефть': 'ООО «Башнефть-Розница»',
+    'Ашан': 'ООО «Ашан»',
+    'Почта России': 'АО «Почта России»'
+}
 
-        .alert {
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-        }
+ADDRESS_DIRECTORY = {
+    'Озон Сургут': 'г. Сургут, Нефтеюганское ш., д. 22/2',
+    'Озон Ноябрьск': 'г. Ноябрьск, промузел Пелей, 12-й проезд, панель XIV',
+    'Озон Тагил': 'г. Нижний Тагил, Свердловское ш., д. 65',
+    'Озон Тюмень': 'г. Тюмень, ул. 30 лет Победы',
+    'Озон Миасс': 'г. Миасс, ул. 60 лет Октября, стр. 1/1',
+    'Озон Челябинск': 'г. Челябинск, ул. Линейная, д. 59/1',
+    'Озон Екатеринбург Логопарк': 'г. Екатеринбург, логопарк Кольцовский, 15',
+    'Озон Екатеринбург Черняховского': 'г. Екатеринбург, ул. Черняховского, д. 104',
+    'Лента Тольятти': 'Самарская обл, г. Тольятти, ул. Южное шоссе, д. 4',
+    'Ашан Засечное': 'с. Засечное, ул. Мясницкая, д. 4',
+    'Ашан Пенза': 'г. Пенза, ул. Антонова, д. 78',
+    'Башнефть Курган': 'г. Курган',
+    'Башнефть Курган 1': 'г. Курган, пр. Конституции, д. 26',
+    'Башнефть Курган 2': 'г. Курган, ул. Машиностроителей, д. 36А',
+}
 
-        .alert-success {
-            background: #d4edda;
-            border: 1px solid #c3e6cb;
-            color: #155724;
-        }
+# ФУНКЦИИ ДЛЯ ИЗВЛЕЧЕНИЯ ТЕКСТА ИЗ ФАЙЛОВ
+def extract_text_from_pdf(file_bytes):
+    """Извлекает текст из PDF"""
+    try:
+        pdf_reader = PdfReader(BytesIO(file_bytes))
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() + "\n"
+        return text.strip()
+    except Exception as e:
+        logger.error(f"Ошибка извлечения текста из PDF: {e}")
+        return ""
 
-        .alert-warning {
-            background: #fff3cd;
-            border: 1px solid #ffeaa7;
-            color: #856404;
-        }
+def extract_text_from_image(file_bytes, file_type):
+    """Изображения отправляем напрямую Claude - он умеет их читать"""
+    # Возвращаем None чтобы отправить изображение Claude
+    return None
 
-        .alert-error {
-            background: #f8d7da;
-            border: 1px solid #f5c6cb;
-            color: #721c24;
-        }
+def extract_text_from_docx(file_bytes):
+    """Извлекает текст из DOCX"""
+    try:
+        doc = Document(BytesIO(file_bytes))
+        text = '\n'.join([paragraph.text for paragraph in doc.paragraphs if paragraph.text.strip()])
+        return text.strip()
+    except Exception as e:
+        logger.error(f"Ошибка извлечения текста из DOCX: {e}")
+        return ""
 
-        .loading {
-            text-align: center;
-            padding: 40px;
-        }
+CONTRACT_TYPES = {
+    'city_manage_gov': {
+        'name': 'Договор Сити Менедж Гос',
+        'parts': ['Договор_Сити_Менедж_Гос.html', 'СМ_Приложение_1_Гос.html', 'СМ_Приложение_2_Гос.html']
+    },
+    'city_manage_universal': {
+        'name': 'Договор Сити Менедж Универсал',
+        'parts': ['Договор_Сити_Менедж_Универсал.html', 'СМ_Приложение_1_Универсал.html', 'СМ_Приложение_2_Универсал.html']
+    },
+    'city_manage_perekrestok': {
+        'name': 'Договор Сити Менедж Перекрёсток',
+        'parts': ['Договор_Сити_Менедж_Перекрёсток.html', 'СМ_Приложение_1_Перекрёсток.html', 'СМ_Приложение_2_Перекрёсток.html']
+    },
+    'skorichenko_gov': {
+        'name': 'Договор Скориченко Гос',
+        'parts': ['Договор_Скориченко_Гос.html', 'СК_Приложение_1_Гос.html', 'СК_Приложение_2_Гос.html']
+    },
+    'skorichenko_monetka': {
+        'name': 'Договор Скориченко Монетка',
+        'parts': ['Договор_Скориченко_Монетка.html', 'СК_Приложение_1_Монетка.html', 'СК_Приложение_2_Монетка.html']
+    }
+}
 
-        .spinner {
-            border: 4px solid #f3f3f3;
-            border-top: 4px solid #667eea;
-            border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 20px;
-        }
+def init_db():
+    try:
+        conn = sqlite3.connect('contracts_history.db')
+        c = conn.cursor()
+        c.execute('''CREATE TABLE IF NOT EXISTS contracts
+                     (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      contract_type TEXT NOT NULL,
+                      user_data TEXT NOT NULL,
+                      generated_html TEXT NOT NULL,
+                      model_used TEXT NOT NULL,
+                      cost_estimate REAL,
+                      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+        conn.commit()
+        conn.close()
+        logger.info("База данных инициализирована")
+    except Exception as e:
+        logger.error(f"Ошибка инициализации БД: {e}")
 
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
+def save_to_history(contract_type, user_data, generated_html, model_used, cost_estimate):
+    try:
+        conn = sqlite3.connect('contracts_history.db')
+        c = conn.cursor()
+        c.execute('''INSERT INTO contracts (contract_type, user_data, generated_html, model_used, cost_estimate)
+                     VALUES (?, ?, ?, ?, ?)''',
+                  (contract_type, user_data, generated_html, model_used, cost_estimate))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.error(f"Ошибка сохранения в историю: {e}")
 
-        .contract-preview {
-            border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 20px;
-            max-height: 600px;
-            overflow-y: auto;
-            background: #fafafa;
-        }
+def get_history(limit=50):
+    try:
+        conn = sqlite3.connect('contracts_history.db')
+        c = conn.cursor()
+        c.execute('''SELECT id, contract_type, user_data, created_at, model_used, cost_estimate
+                     FROM contracts ORDER BY created_at DESC LIMIT ?''', (limit,))
+        rows = c.fetchall()
+        conn.close()
+        return rows
+    except Exception as e:
+        logger.error(f"Ошибка получения истории: {e}")
+        return []
 
-        .model-toggle {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 15px;
-        }
+def get_contract_by_id(contract_id):
+    try:
+        conn = sqlite3.connect('contracts_history.db')
+        c = conn.cursor()
+        c.execute('SELECT * FROM contracts WHERE id = ?', (contract_id,))
+        row = c.fetchone()
+        conn.close()
+        return row
+    except Exception as e:
+        logger.error(f"Ошибка получения договора: {e}")
+        return None
 
-        .model-option {
-            flex: 1;
-            padding: 15px;
-            border: 2px solid #e0e0e0;
-            border-radius: 8px;
-            cursor: pointer;
-            transition: all 0.2s;
-            text-align: center;
-        }
-
-        .model-option:hover {
-            border-color: #667eea;
-        }
-
-        .model-option.active {
-            border-color: #667eea;
-            background: #f5f5ff;
-        }
-
-        .cost-info {
-            font-size: 12px;
-            color: #666;
-            margin-top: 5px;
-        }
-
-        @media (max-width: 968px) {
-            .main-content {
-                grid-template-columns: 1fr;
-            }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>❄️ Сити Менедж Снег - Генератор договоров</h1>
-            <div class="header-buttons">
-                <a href="{{ url_for('history') }}" class="btn btn-secondary">📋 История</a>
-                <a href="{{ url_for('logout') }}" class="btn btn-secondary">Выход</a>
-            </div>
-        </div>
-
-        <div class="main-content">
-            <!-- Левая панель - Ввод данных -->
-            <div class="card">
-                <h2>📝 Создание договора</h2>
-
-                <div class="form-group">
-                    <label>Тип договора:</label>
-                    <select id="contractType">
-                        <option value="">-- Выберите тип --</option>
-                        {% for key, contract in contract_types.items() %}
-                        <option value="{{ key }}">{{ contract.name }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-
-                <div class="form-group">
-                    <label>Модель AI:</label>
-                    <div class="model-toggle">
-                        <div class="model-option active" data-model="haiku">
-                            <strong>Haiku</strong>
-                            <div class="cost-info">Быстрая, ~1.5₽</div>
-                        </div>
-                        <div class="model-option" data-model="sonnet">
-                            <strong>Sonnet</strong>
-                            <div class="cost-info">Точная, ~18₽</div>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label>Прикрепить файлы:</label>
-                    <div class="file-upload" id="fileUpload">
-                        <input type="file" id="fileInput" multiple accept=".pdf,.jpg,.jpeg,.png,.webp,.heic,.doc,.docx">
-                        <div>📁 Нажмите или перетащите файлы</div>
-                        <small>PDF, изображения, документы, CSV</small>
-                    </div>
-                    <div class="files-list" id="filesList"></div>
-                </div>
-
-                <div class="form-group">
-                    <label>Данные для договора:</label>
-                    <textarea id="userInput" placeholder="Пример:
-
-Договор №20102024/15 от 20.10.2024
-Город: Екатеринбург
-Заказчик: ООО 'Ромашка'
-Директор: Петров П.П.
-Объект: Озон Екатеринбург Логопарк
-Услуги: Уборка территории 50000 руб/мес
-Ответственный: Сидоров С.С., тел. +7 123 456-78-90, e-mail: sidorov@example.com"></textarea>
-                </div>
-
-                <button class="btn-generate" id="generateBtn">🤖 Сгенерировать договор</button>
-            </div>
-
-            <!-- Правая панель - Результат -->
-            <div class="card">
-                <h2>📄 Результат</h2>
-
-                <div id="initialMessage">
-                    <div style="text-align: center; padding: 60px 20px; color: #999;">
-                        <div style="font-size: 48px; margin-bottom: 20px;">📋</div>
-                        <p>Выберите тип договора, введите данные<br>и нажмите "Сгенерировать"</p>
-                    </div>
-                </div>
-
-                <div id="loadingMessage" style="display: none;">
-                    <div class="loading">
-                        <div class="spinner"></div>
-                        <p style="color: #667eea; font-weight: 600;">Обработка запроса...</p>
-                    </div>
-                </div>
-
-                <div id="resultArea" class="result-area">
-                    <div id="alerts"></div>
-                    <div id="contractPreview" class="contract-preview"></div>
-                    <div style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
-                        <button class="btn-generate" style="flex: 1; background: #28a745;" id="downloadDocxBtn">📄 Скачать DOCX</button>
-                        <button class="btn-generate" style="flex: 1;" id="downloadBtn">💾 Скачать HTML</button>
-                        <button class="btn-generate" style="flex: 0.5; background: #6c757d;" id="resetBtn">🔄 Новый</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <script>
-    {% raw %}
-        let uploadedFiles = [];
-        let useSonnet = false;
-        let conversationHistory = [];
-        let generatedHtml = '';
-        let currentContractId = null; // ID последнего сгенерированного договора
-
-        // Выбор модели
-        document.querySelectorAll('.model-option').forEach(option => {
-            option.addEventListener('click', function() {
-                document.querySelectorAll('.model-option').forEach(o => o.classList.remove('active'));
-                this.classList.add('active');
-                useSonnet = this.dataset.model === 'sonnet';
-            });
-        });
-
-        // Загрузка файлов
-        const fileUpload = document.getElementById('fileUpload');
-        const fileInput = document.getElementById('fileInput');
-        const filesList = document.getElementById('filesList');
-
-        fileUpload.addEventListener('click', () => fileInput.click());
+def html_to_docx(html_content, contract_type_name):
+    """Конвертирует HTML в DOCX"""
+    try:
+        logger.info("Конвертация HTML → DOCX")
+        document = Document()
+        parser = HtmlToDocx()
+        parser.add_html_to_document(html_content, document)
         
-        fileInput.addEventListener('change', handleFiles);
+        docx_file = BytesIO()
+        document.save(docx_file)
+        docx_file.seek(0)
+        
+        logger.info("Конвертация завершена")
+        return docx_file
+    except Exception as e:
+        logger.error(f"Ошибка конвертации: {e}")
+        raise
 
-        async function handleFiles(e) {
-            const files = Array.from(e.target.files);
-            for (const file of files) {
-                const base64 = await readFileAsBase64(file);
-                uploadedFiles.push({
-                    name: file.name,
-                    type: file.type,
-                    data: base64,
-                    size: file.size
-                });
-            }
-            renderFilesList();
-        }
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
 
-        function readFileAsBase64(file) {
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(reader.result.split(',')[1]);
-                reader.onerror = reject;
-                reader.readAsDataURL(file);
-            });
-        }
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        password = request.form.get('password')
+        if password == APP_PASSWORD:
+            session['logged_in'] = True
+            return redirect(url_for('index'))
+        else:
+            return render_template('login.html', error='Неверный пароль')
+    return render_template('login.html')
 
-        function renderFilesList() {
-            filesList.innerHTML = uploadedFiles.map((file, index) => `
-                <div class="file-item">
-                    <span>📄 ${file.name} (${(file.size / 1024).toFixed(1)} KB)</span>
-                    <button class="btn-remove" onclick="removeFile(${index})">Удалить</button>
-                </div>
-            `).join('');
-        }
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    return redirect(url_for('login'))
 
-        function removeFile(index) {
-            uploadedFiles.splice(index, 1);
-            renderFilesList();
-        }
+@app.route('/')
+@login_required
+def index():
+    return render_template('index.html', contract_types=CONTRACT_TYPES)
 
-        // Генерация договора
-        document.getElementById('generateBtn').addEventListener('click', generateContract);
+@app.route('/history')
+@login_required
+def history():
+    contracts = get_history()
+    return render_template('history.html', contracts=contracts, contract_types=CONTRACT_TYPES)
 
-        async function generateContract() {
-            const contractType = document.getElementById('contractType').value;
-            const userInput = document.getElementById('userInput').value.trim();
+@app.route('/history/<int:contract_id>')
+@login_required
+def view_contract(contract_id):
+    contract = get_contract_by_id(contract_id)
+    if contract:
+        return contract[3]
+    return "Договор не найден", 404
 
-            if (!contractType) {
-                alert('Выберите тип договора');
-                return;
-            }
+@app.route('/download/<int:contract_id>')
+@login_required
+def download_contract(contract_id):
+    """Скачивание в DOCX"""
+    try:
+        contract = get_contract_by_id(contract_id)
+        if not contract:
+            return "Договор не найден", 404
+        
+        contract_type = contract[1]
+        html_content = contract[3]
+        created_at = contract[6]
+        
+        contract_type_name = CONTRACT_TYPES.get(contract_type, {}).get('name', 'Договор')
+        filename = f"{contract_type_name}_{created_at.replace(':', '-').replace(' ', '_')}.docx"
+        
+        docx_file = html_to_docx(html_content, contract_type_name)
+        
+        return send_file(
+            docx_file,
+            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        logger.error(f"Ошибка скачивания: {e}")
+        return f"Ошибка: {str(e)}", 500
 
-            if (!userInput && uploadedFiles.length === 0) {
-                alert('Введите данные или загрузите файлы');
-                return;
-            }
+def clean_html(text):
+    text = re.sub(r'```html\s*', '', text, flags=re.IGNORECASE)
+    text = re.sub(r'```\s*', '', text)
+    text = text.strip()
+    
+    patterns = [r'(<!DOCTYPE[^>]*>.*)', r'(<html[^>]*>.*)', r'(<div[^>]*>.*)']
+    for pattern in patterns:
+        match = re.search(pattern, text, re.DOTALL | re.IGNORECASE)
+        if match:
+            return match.group(1)
+    
+    return text
 
-            document.getElementById('initialMessage').style.display = 'none';
-            document.getElementById('loadingMessage').style.display = 'block';
-            document.getElementById('resultArea').classList.remove('active');
-            document.getElementById('generateBtn').disabled = true;
+@app.route('/api/generate', methods=['POST'])
+@login_required
+def generate_contract():
+    try:
+        logger.info("=== НАЧАЛО ГЕНЕРАЦИИ ===")
+        
+        data = request.json
+        contract_type = data.get('contract_type')
+        user_input = data.get('user_input')
+        files_data = data.get('files', [])
+        use_sonnet = data.get('use_sonnet', False)
+        
+        logger.info(f"Тип: {contract_type}, Модель: {'Sonnet' if use_sonnet else 'Haiku'}")
+        logger.info(f"Данные: {len(user_input)} символов, Файлов: {len(files_data)}")
 
-            try {
-                const response = await fetch('/api/generate', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        contract_type: contractType,
-                        user_input: userInput,
-                        files: uploadedFiles,
-                        use_sonnet: useSonnet,
-                        conversation_history: conversationHistory
+        if not contract_type or not user_input:
+            return jsonify({'error': 'Не указан тип или данные'}), 400
+
+        if not API_KEY:
+            return jsonify({'error': 'API ключ не настроен'}), 500
+
+        model = MODEL_SONNET if use_sonnet else MODEL_HAIKU
+        templates_dir = Path('contracts_templates')
+        
+        logger.info(f"Папка шаблонов: {templates_dir.absolute()}")
+        logger.info(f"Существует: {templates_dir.exists()}")
+        
+        if not templates_dir.exists():
+            logger.error(f"❌ Папка contracts_templates не найдена!")
+            return jsonify({'error': 'Папка с шаблонами не найдена'}), 500
+        
+        contract_config = CONTRACT_TYPES.get(contract_type)
+        
+        if not contract_config:
+            return jsonify({'error': 'Неизвестный тип договора'}), 400
+
+        logger.info("Загрузка шаблонов...")
+        template_parts = []
+        for part_file in contract_config['parts']:
+            template_path = templates_dir / part_file
+            logger.info(f"Ищу шаблон: {template_path}")
+            logger.info(f"Существует: {template_path.exists()}")
+            
+            if template_path.exists():
+                try:
+                    with open(template_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                        template_parts.append(content)
+                        logger.info(f"✅ Загружен: {part_file} ({len(content)} символов)")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка чтения {part_file}: {e}")
+                    return jsonify({'error': f'Ошибка чтения шаблона {part_file}: {str(e)}'}), 500
+            else:
+                logger.error(f"❌ Файл не найден: {template_path}")
+                return jsonify({'error': f'Шаблон не найден: {part_file}'}), 500
+
+        logger.info(f"Загружено: {len(template_parts)} шаблонов")
+
+        current_date = datetime.now().strftime('%d.%m.%Y')
+        system_prompt = SYSTEM_PROMPT.format(current_date=current_date)
+
+        content = []
+
+        # ФАЙЛЫ - ИЗВЛЕКАЕМ ТЕКСТ ИЗ PDF И DOCX, ИЗОБРАЖЕНИЯ ОТПРАВЛЯЕМ CLAUDE
+        extracted_texts = []
+        images_for_claude = []  # Изображения отправим Claude
+        
+        if files_data:
+            logger.info(f"=== ОБРАБОТКА {len(files_data)} ФАЙЛОВ ===")
+            
+            for i, file_data in enumerate(files_data):
+                file_type = file_data.get('type', '')
+                file_name = file_data.get('name', f'file_{i+1}')
+                file_bytes = base64.b64decode(file_data.get('data', ''))
+                
+                logger.info(f"Файл {i+1}: {file_name} ({file_type})")
+                
+                extracted_text = ""
+                
+                # PDF - извлекаем текст
+                if 'pdf' in file_type.lower():
+                    extracted_text = extract_text_from_pdf(file_bytes)
+                    if extracted_text:
+                        logger.info(f"✅ PDF извлечено {len(extracted_text)} символов")
+                        logger.info(f"Первые 200 символов: {extracted_text[:200]}")
+                    else:
+                        logger.warning(f"⚠️ PDF пустой или не удалось извлечь текст")
+                
+                # DOCX/DOC - извлекаем текст
+                elif 'wordprocessingml' in file_type or file_name.lower().endswith(('.docx', '.doc')):
+                    extracted_text = extract_text_from_docx(file_bytes)
+                    if extracted_text:
+                        logger.info(f"✅ DOCX извлечено {len(extracted_text)} символов")
+                        logger.info(f"Первые 200 символов: {extracted_text[:200]}")
+                    else:
+                        logger.warning(f"⚠️ DOCX пустой или не удалось извлечь текст")
+                
+                # Изображения - отправляем Claude
+                elif 'image' in file_type.lower():
+                    logger.info(f"📷 Изображение будет отправлено Claude для анализа")
+                    images_for_claude.append({
+                        'name': file_name,
+                        'type': file_type,
+                        'data': file_data.get('data', '')
                     })
-                });
+                
+                # Текстовые файлы
+                elif 'text' in file_type or file_name.lower().endswith('.txt'):
+                    try:
+                        extracted_text = file_bytes.decode('utf-8')
+                        logger.info(f"✅ TXT извлечено {len(extracted_text)} символов")
+                    except:
+                        logger.warning(f"❌ Не удалось декодировать текстовый файл")
+                
+                if extracted_text:
+                    extracted_texts.append(f"=== ФАЙЛ: {file_name} ===\n{extracted_text}\n")
+        
+        # Добавляем ВСЕ извлечённые тексты в начало
+        if extracted_texts:
+            all_files_text = "\n".join(extracted_texts)
+            content.append({
+                'type': 'text', 
+                'text': f"""{'='*80}
+ДАННЫЕ ИЗ ФАЙЛОВ ({len(extracted_texts)} файлов с текстом):
+{'='*80}
 
-                const data = await response.json();
+КРИТИЧЕСКИ ВАЖНО: Ниже данные извлечённые из прикреплённых файлов.
+Используй ЭТИ данные для заполнения реквизитов, ФИО директора, адресов!
 
-                document.getElementById('loadingMessage').style.display = 'none';
-                document.getElementById('resultArea').classList.add('active');
+{all_files_text}
 
-                if (data.status === 'question') {
-                    showAlert('warning', `Claude задал вопрос: ${data.question}<br><br>Отсутствующие поля: ${data.missing_fields.join(', ')}<br><br>Добавьте информацию и попробуйте снова.`);
-                    conversationHistory = data.conversation;
-                } else if (data.status === 'success') {
-                    generatedHtml = data.html;
-                    currentContractId = data.contract_id; // Сохраняем ID для скачивания DOCX
-                    console.log('Contract ID received:', currentContractId); // Debug
-                    
-                    document.getElementById('contractPreview').innerHTML = data.html;
-                    showAlert('success', `✅ Договор успешно создан!<br>Модель: ${data.model === 'claude-3-5-haiku-20241022' ? 'Haiku' : 'Sonnet'}<br>Стоимость: $${data.cost} (~${(data.cost * 100).toFixed(1)}₽)<br>Токены: ${data.tokens.input} вход / ${data.tokens.output} выход`);
-                    conversationHistory = [];
-                }
-            } catch (error) {
-                document.getElementById('loadingMessage').style.display = 'none';
-                showAlert('error', 'Ошибка: ' + error.message);
-            } finally {
-                document.getElementById('generateBtn').disabled = false;
-            }
-        }
+{'='*80}
+КОНЕЦ ДАННЫХ ИЗ ФАЙЛОВ
+{'='*80}"""
+            })
+            logger.info(f"✅ Всего извлечено текста из {len(extracted_texts)} файлов: {len(all_files_text)} символов")
+        
+        # Добавляем изображения для Claude
+        if images_for_claude:
+            content.append({'type': 'text', 'text': f"\n{'='*80}\nИЗОБРАЖЕНИЯ ({len(images_for_claude)} шт) - прочитай текст с них:\n{'='*80}\n"})
+            for img in images_for_claude:
+                content.append({'type': 'text', 'text': f"Файл: {img['name']}"})
+                content.append({
+                    'type': 'image',
+                    'source': {'type': 'base64', 'media_type': img['type'], 'data': img['data']}
+                })
+            logger.info(f"📷 Отправлено {len(images_for_claude)} изображений Claude для анализа")
+        
+        if not extracted_texts and not images_for_claude:
+            logger.warning("⚠️ Не удалось извлечь данные ни из одного файла")
 
-        function showAlert(type, message) {
-            const alertClass = `alert-${type === 'question' ? 'warning' : type}`;
-            document.getElementById('alerts').innerHTML = `
-                <div class="alert ${alertClass}">
-                    ${message}
-                </div>
-            `;
-        }
+        # ШАБЛОНЫ
+        template_text = ""
+        for i, part in enumerate(template_parts):
+            template_text += f"\n\n{'='*80}\nЧАСТЬ {i+1}/{len(template_parts)}: {contract_config['parts'][i]}\n{'='*80}\n\n{part}"
+        
+        objects_ref = json.dumps(OBJECTS_DIRECTORY, ensure_ascii=False, indent=2)
+        addresses_ref = json.dumps(ADDRESS_DIRECTORY, ensure_ascii=False, indent=2)
+        
+        user_message = f"""ЗАДАЧА: Заполни ВСЕ {len(template_parts)} части шаблона ИЛИ верни JSON если не хватает данных.
 
-        // Скачивание DOCX
-        document.getElementById('downloadDocxBtn').addEventListener('click', () => {
-            console.log('Download button clicked, currentContractId:', currentContractId); // Debug
-            if (!currentContractId) {
-                alert('Договор не сохранен. Сначала сгенерируйте договор.');
-                return;
-            }
+{'='*80}
+КРИТИЧЕСКИ ВАЖНО - ДАННЫЕ ИЗ ФАЙЛОВ:
+{'='*80}
+{"✅ Выше в сообщении ты УЖЕ ПОЛУЧИЛ текст из " + str(len(extracted_texts)) + " файлов!" if extracted_texts else "⚠️ Файлы не содержали текста"}
+{"✅ Выше в сообщении ты УЖЕ ПОЛУЧИЛ " + str(len(images_for_claude)) + " изображений для анализа!" if images_for_claude else ""}
+
+ПРИОРИТЕТ ДАННЫХ:
+1. ДАННЫЕ ИЗ ФАЙЛОВ (в блоке "ДАННЫЕ ИЗ ФАЙЛОВ" выше) - САМЫЙ ВЫСОКИЙ ПРИОРИТЕТ!
+2. Текст пользователя ниже
+3. Справочники
+4. Автозаполнение
+
+{"⚠️ НЕ ИГНОРИРУЙ блок 'ДАННЫЕ ИЗ ФАЙЛОВ' - там реквизиты!" if extracted_texts else ""}
+{"⚠️ НЕ ИГНОРИРУЙ изображения - прочитай текст с них!" if images_for_claude else ""}
+
+НЕ ЗАПРАШИВАЙ у пользователя то, что УЖЕ ЕСТЬ в файлах!
+
+{'='*80}
+ШАБЛОНЫ (все части договора):
+{'='*80}
+{template_text}
+
+{'='*80}
+ДАННЫЕ ОТ ПОЛЬЗОВАТЕЛЯ:
+{'='*80}
+{user_input}
+
+{'='*80}
+СПРАВОЧНИКИ:
+{'='*80}
+Объекты: {objects_ref}
+Адреса: {addresses_ref}
+
+{'='*80}
+КРИТИЧЕСКИЕ ПРАВИЛА ЗАПОЛНЕНИЯ:
+{'='*80}
+
+1. ДАТА ЗАКЛЮЧЕНИЯ [Дата заключения]:
+   - Извлекай из НОМЕРА договора
+   - Формат: ДД.ММ.ГГГГ
+   - Пример: "20102025/1" → "20.10.2025"
+
+2. ОТВЕТСТВЕННОЕ ЛИЦО СО СТОРОНЫ ЗАКАЗЧИКА [ответственное лицо с стороны заказчика]:
+   - ОБЯЗАТЕЛЬНО: ФИО + телефон + e-mail
+   - ФОРМАТ: "ФИО телефон, e-mail" (БЕЗ слов "тел." или "e-mail:")
+   - ✅ Правильно: "Алёшина Марина Андреевна 89193776442, aleshina-marina.1998@yandex.ru"
+   - ❌ Неправильно: "Алёшина Марина Андреевна, тел. 89193776442, e-mail: aleshina-marina.1998@yandex.ru"
+   - Если нет всех 3 частей → верни JSON с missing_fields
+
+3. ОТВЕТСТВЕННОЕ ЛИЦО СО СТОРОНЫ ИСПОЛНИТЕЛЯ [ответственное лицо с стороны исполнителя]:
+   - Вставляй ТОЧНО как дал пользователь (без добавления слов)
+   - Пример: "89025937703" → вставь "89025937703"
+   - НЕ проверяй наличие e-mail (его может не быть)
+
+4. E-MAIL ОТВЕТСТВЕННОГО [E-mail ответственного]:
+   - Это e-mail из "ответственного лица со стороны ЗАКАЗЧИКА"
+   - ДЛЯ СИТИ МЕНЕДЖ:
+     * Если email заказчика = "mitkina.citymanage@yandex.ru" → оставь поле ПУСТЫМ
+     * Если email заказчика ≠ "mitkina.citymanage@yandex.ru" → вставь ", EMAIL"
+   - ДЛЯ СКОРИЧЕНКО: ВСЕГДА вставляй ", EMAIL"
+   - Примеры:
+     * email заказчика = "aleshina-marina.1998@yandex.ru" → вставь ", aleshina-marina.1998@yandex.ru"
+     * email заказчика = "mitkina.citymanage@yandex.ru" И Сити Менедж → оставь пустым
+
+5. РЕКВИЗИТЫ [Реквизиты]:
+   - ВНИМАТЕЛЬНО изучи прикреплённые файлы (DOCX, PDF, изображения)
+   - Ищи: ИНН, КПП, ОГРН, р/с, банк, БИК, к/с
+   - Если в файлах есть реквизиты → используй ИХ
+   - Если нет → оставь [Реквизиты]
+
+6. ФАМИЛИЯ И.О. ИСПОЛНИТЕЛЯ [Фамилия И.О.]:
+   - Ищи ФИО в РЕКВИЗИТАХ из файлов (не в подписи/печати)
+   - Это ФИО которое указано в реквизитах организации
+   - Если есть → используй
+   - Если нет → оставь [Фамилия И.О.]
+
+7. АДРЕС [Адрес]:
+   - Используй справочник адресов если объект известен
+   - Если объекта нет в справочнике → используй адрес из данных пользователя
+   - Если адреса нет вообще → оставь [Адрес]
+
+8. НАИМЕНОВАНИЕ ОБЪЕКТА [Наименование объекта] (для Универсал, Гос):
+   - Ищи в данных пользователя ключевые слова
+   - Если текст содержит "Озон" → "Озон"
+   - Если текст содержит "КБ" → "КБ РЦ"
+   - Если текст содержит "Башнефть" → "Башнефть"
+   - Если текст содержит "Ашан" → "Ашан"
+   - Если текст содержит "Почта России" → "Почта России"
+   - Если текст содержит "Лента" → "Лента"
+   - Если не нашёл → [Наименование объекта]
+
+9. УСЛУГИ [Услуги]:
+   - Формат: "Название – цена. " (длинное тире с пробелами, точка в конце)
+   - м³ (не м3), м² (не м2)
+
+{'='*80}
+ПРОВЕРКА ПЕРЕД ОТПРАВКОЙ:
+{'='*80}
+
+КРИТИЧЕСКИ ВАЖНО:
+- Если прикреплены файлы ({len(files_data)} шт.) → СНАЧАЛА извлеки из них ВСЕ возможные данные
+- НЕ ЗАПРАШИВАЙ: Реквизиты, Фамилия И.О., Юр. лицо - если файлы есть
+- Запрашивай только данные которых точно нет ни в файлах, ни в тексте пользователя
+
+ЕСЛИ ПРИКРЕПЛЕНЫ ФАЙЛЫ:
+→ Извлеки максимум данных
+→ Заполни что можешь
+→ Оставь [Плейсхолдеры] для того чего не нашёл
+→ НЕ возвращай JSON с missing_fields для данных из файлов
+
+ЕСЛИ НЕТ ФАЙЛОВ И НЕТ КРИТИЧЕСКИХ ДАННЫХ В ТЕКСТЕ → верни JSON:
+{{{{
+    "question": "Не хватает данных для заполнения договора",
+    "missing_fields": ["только те поля, которых точно нет ни в файлах, ни в тексте"]
+}}}}
+
+ЕСЛИ ВСЁ ЕСТЬ ИЛИ ФАЙЛЫ ПРИКРЕПЛЕНЫ → верни ВЕСЬ HTML документ ({len(template_parts)} части) БЕЗ markdown.
+Начни сразу с <!DOCTYPE html>"""
+
+        content.append({'type': 'text', 'text': user_message})
+
+        logger.info("→ Claude API")
+        
+        try:
+            client = anthropic.Anthropic(api_key=API_KEY)
+            messages = [{'role': 'user', 'content': content}]
+
+            response = client.messages.create(
+                model=model,
+                max_tokens=16000,
+                system=system_prompt,
+                messages=messages,
+                temperature=0.2
+            )
+
+            logger.info("← Ответ получен")
             
-            showAlert('success', '⏳ Начинается конвертация в DOCX и скачивание...');
+            assistant_response = response.content[0].text
+            input_tokens = response.usage.input_tokens
+            output_tokens = response.usage.output_tokens
             
-            // Открываем ссылку на скачивание
-            window.location.href = `/download/${currentContractId}`;
-        });
+            if model == MODEL_HAIKU:
+                cost = (input_tokens * 0.25 + output_tokens * 1.25) / 1000000
+            else:
+                cost = (input_tokens * 3 + output_tokens * 15) / 1000000
 
-        // Скачивание HTML
-        document.getElementById('downloadBtn').addEventListener('click', () => {
-            if (!generatedHtml) {
-                alert('Сначала сгенерируйте договор');
-                return;
-            }
+            logger.info(f"Токены: {input_tokens}/{output_tokens}, Цена: ${cost:.4f}")
+
+            if assistant_response.strip().startswith('{'):
+                try:
+                    json_data = json.loads(assistant_response)
+                    if 'question' in json_data:
+                        return jsonify({
+                            'status': 'question',
+                            'question': json_data['question'],
+                            'missing_fields': json_data.get('missing_fields', []),
+                            'conversation': messages + [{'role': 'assistant', 'content': assistant_response}],
+                            'cost': round(cost, 4)
+                        })
+                except:
+                    pass
+
+            clean_html_text = clean_html(assistant_response)
+
+            if len(clean_html_text) < 1000:
+                return jsonify({'error': 'Ответ слишком короткий', 'debug': assistant_response[:500]}), 500
+
+            save_to_history(contract_type, user_input, clean_html_text, model, cost)
             
-            const blob = new Blob([generatedHtml], { type: 'text/html' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = `договор_${Date.now()}.html`;
-            a.click();
-            URL.revokeObjectURL(url);
-        });
+            # Получаем ID последнего сохранённого договора
+            conn = sqlite3.connect('contracts_history.db')
+            c = conn.cursor()
+            c.execute('SELECT last_insert_rowid()')
+            contract_id = c.fetchone()[0]
+            conn.close()
 
-        // Сброс
-        document.getElementById('resetBtn').addEventListener('click', () => {
-            document.getElementById('userInput').value = '';
-            uploadedFiles = [];
-            renderFilesList();
-            conversationHistory = [];
-            generatedHtml = '';
-            currentContractId = null;
-            document.getElementById('resultArea').classList.remove('active');
-            document.getElementById('initialMessage').style.display = 'block';
-        });
-    {% endraw %}
-    </script>
-</body>
-</html>
+            logger.info("=== УСПЕШНО ===")
+            return jsonify({
+                'status': 'success',
+                'html': clean_html_text,
+                'contract_id': contract_id,
+                'cost': round(cost, 4),
+                'model': model,
+                'tokens': {'input': input_tokens, 'output': output_tokens}
+            })
+
+        except anthropic.AuthenticationError as e:
+            return jsonify({'error': f'Ошибка API ключа: {str(e)}'}), 500
+        except anthropic.APIError as e:
+            return jsonify({'error': f'Ошибка API: {str(e)}'}), 500
+
+    except Exception as e:
+        logger.error(f"ОШИБКА: {e}")
+        logger.error(traceback.format_exc())
+        return jsonify({'error': f'Ошибка: {str(e)}'}), 500
+
+init_db()
+
+if __name__ == '__main__':
+    port = int(os.getenv('PORT', 5000))
+    logger.info(f"Порт: {port}, API: {'Да' if API_KEY else 'НЕТ'}")
+    app.run(host='0.0.0.0', port=port, debug=False)
