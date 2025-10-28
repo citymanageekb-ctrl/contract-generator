@@ -363,7 +363,6 @@
                     <div id="alerts"></div>
                     <div id="contractPreview" class="contract-preview"></div>
                     <div style="margin-top: 15px; display: flex; gap: 10px; flex-wrap: wrap;">
-                        <button class="btn-generate" style="flex: 1; background: #28a745;" id="downloadDocxBtn">📄 Скачать DOCX</button>
                         <button class="btn-generate" style="flex: 1;" id="downloadBtn">💾 Скачать HTML</button>
                         <button class="btn-generate" style="flex: 0.5; background: #6c757d;" id="resetBtn">🔄 Новый</button>
                     </div>
@@ -480,6 +479,15 @@
                 if (data.status === 'question') {
                     showAlert('warning', `Claude задал вопрос: ${data.question}<br><br>Отсутствующие поля: ${data.missing_fields.join(', ')}<br><br>Добавьте информацию и попробуйте снова.`);
                     conversationHistory = data.conversation;
+                } else if (data.status === 'warning') {
+                    // Договор создан но с пустыми полями
+                    generatedHtml = data.html;
+                    currentContractId = data.contract_id; // ID есть - можно скачать
+                    console.log('Contract ID received (with warnings):', currentContractId); // Debug
+                    
+                    document.getElementById('contractPreview').innerHTML = data.html;
+                    showAlert('warning', `⚠️ ${data.question}<br><br>Отсутствующие поля: ${data.missing_fields.join(', ')}<br><br>Договор создан, но эти поля нужно заполнить вручную.<br>Модель: ${data.model === 'claude-3-5-haiku-20241022' ? 'Haiku' : 'Sonnet'}<br>Стоимость: $${data.cost} (~${(data.cost * 100).toFixed(1)}₽)`);
+                    conversationHistory = [];
                 } else if (data.status === 'success') {
                     generatedHtml = data.html;
                     currentContractId = data.contract_id; // Сохраняем ID для скачивания DOCX
@@ -505,20 +513,6 @@
                 </div>
             `;
         }
-
-        // Скачивание DOCX
-        document.getElementById('downloadDocxBtn').addEventListener('click', () => {
-            console.log('Download button clicked, currentContractId:', currentContractId); // Debug
-            if (!currentContractId) {
-                alert('Договор не сохранен. Сначала сгенерируйте договор.');
-                return;
-            }
-            
-            showAlert('success', '⏳ Начинается конвертация в DOCX и скачивание...');
-            
-            // Открываем ссылку на скачивание
-            window.location.href = `/download/${currentContractId}`;
-        });
 
         // Скачивание HTML
         document.getElementById('downloadBtn').addEventListener('click', () => {
