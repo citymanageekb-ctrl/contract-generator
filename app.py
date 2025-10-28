@@ -18,11 +18,8 @@ import logging
 from io import BytesIO
 from werkzeug.security import check_password_hash, generate_password_hash
 
-# Для конвертации HTML в DOCX
-from docx import Document
-from htmldocx import HtmlToDocx
-
 # Для извлечения текста из файлов
+from docx import Document  # Только для чтения DOCX
 from PyPDF2 import PdfReader
 from PIL import Image
 
@@ -332,24 +329,6 @@ def get_contract_by_id(contract_id):
         logger.error(f"Ошибка получения договора: {e}")
         return None
 
-def html_to_docx(html_content, contract_type_name):
-    """Конвертирует HTML в DOCX"""
-    try:
-        logger.info("Конвертация HTML → DOCX")
-        document = Document()
-        parser = HtmlToDocx()
-        parser.add_html_to_document(html_content, document)
-        
-        docx_file = BytesIO()
-        document.save(docx_file)
-        docx_file.seek(0)
-        
-        logger.info("Конвертация завершена")
-        return docx_file
-    except Exception as e:
-        logger.error(f"Ошибка конвертации: {e}")
-        raise
-
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
@@ -392,34 +371,6 @@ def view_contract(contract_id):
     if contract:
         return contract[3]
     return "Договор не найден", 404
-
-@app.route('/download/<int:contract_id>')
-@login_required
-def download_contract(contract_id):
-    """Скачивание в DOCX"""
-    try:
-        contract = get_contract_by_id(contract_id)
-        if not contract:
-            return "Договор не найден", 404
-        
-        contract_type = contract[1]
-        html_content = contract[3]
-        created_at = contract[6]
-        
-        contract_type_name = CONTRACT_TYPES.get(contract_type, {}).get('name', 'Договор')
-        filename = f"{contract_type_name}_{created_at.replace(':', '-').replace(' ', '_')}.docx"
-        
-        docx_file = html_to_docx(html_content, contract_type_name)
-        
-        return send_file(
-            docx_file,
-            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            as_attachment=True,
-            download_name=filename
-        )
-    except Exception as e:
-        logger.error(f"Ошибка скачивания: {e}")
-        return f"Ошибка: {str(e)}", 500
 
 def clean_html(text):
     text = re.sub(r'```html\s*', '', text, flags=re.IGNORECASE)
@@ -713,6 +664,31 @@ def generate_contract():
    - {"ОБЯЗАТЕЛЬНО найди и используй ФИО из блока 'ДАННЫЕ ИЗ ФАЙЛОВ'!" if extracted_texts else "Если нет → оставь [Фамилия И.О.]"}
    - {"НЕ ОСТАВЛЯЙ [Фамилия И.О.] - данные есть в файлах!" if extracted_texts else ""}
 
+6.1. ЮРИДИЧЕСКОЕ ЛИЦО [Юр. лицо]:
+   - Для ОРГАНИЗАЦИЙ (ООО, ИП, АО и т.д.):
+     * Используй данные из файлов или текста пользователя
+     * Формат: "ООО «Название»", "ИП Иванов Иван Иванович"
+   
+   - Для САМОЗАНЯТЫХ:
+     * ЕСЛИ в тексте есть слово "самозанятый" 
+     * ИЛИ ЕСЛИ нет данных о форме юридического лица (нет ООО, ИП, АО и т.д.)
+     * ТО используй формат:
+     
+     "Гражданин РФ [Фамилия Имя Отчество], являющийся плательщиком налога на профессиональный доход на основании справки о регистрации плательщика налога на профессиональный доход от [дата справки] № [номер справки], (паспорт: [серия и номер паспорта], [кем выдан] [дата выдачи], зарегистрирован: [адрес регистрации])"
+     
+     * Где:
+       - [Фамилия Имя Отчество] - ФИО самозанятого из данных
+       - [дата справки] - дата из данных пользователя (если есть)
+       - [номер справки] - номер из данных пользователя (если есть)
+       - [серия и номер паспорта] - из данных пользователя (если есть)
+       - [кем выдан] - из данных пользователя (если есть)
+       - [дата выдачи] - из данных пользователя (если есть)
+       - [адрес регистрации] - из данных пользователя (если есть)
+     
+     * Если каких-то данных нет - оставь плейсхолдеры в квадратных скобках
+     * Пример: "Гражданин РФ Иванов Иван Иванович, являющийся плательщиком налога на профессиональный доход на основании справки о регистрации плательщика налога на профессиональный доход от 15.03.2024 № 12345, (паспорт: 4512 123456, выдан ОВД Ленинского района г. Екатеринбурга 10.05.2010, зарегистрирован: г. Екатеринбург, ул. Ленина, д. 10, кв. 5)"
+
+7. АДРЕС [Адрес]:
 7. АДРЕС [Адрес]:
    - Используй справочник адресов если объект известен
    - Если объекта нет в справочнике → используй адрес из данных пользователя
@@ -804,6 +780,16 @@ def generate_contract():
             if len(clean_html_text) < 1000:
                 return jsonify({'error': 'Ответ слишком короткий', 'debug': assistant_response[:500]}), 500
 
+            # СОХРАНЯЕМ ДОГОВОР СРАЗУ (даже если есть пустые поля)
+            save_to_history(contract_type, user_input, clean_html_text, model, cost)
+            
+            # Получаем ID последнего сохранённого договора
+            conn = sqlite3.connect('contracts_history.db')
+            c = conn.cursor()
+            c.execute('SELECT last_insert_rowid()')
+            contract_id = c.fetchone()[0]
+            conn.close()
+
             # ПРОВЕРКА: Остались ли критические плейсхолдеры?
             critical_placeholders = []
             if '[Реквизиты]' in clean_html_text:
@@ -813,25 +799,20 @@ def generate_contract():
             if '[Фамилия И.О.]' in clean_html_text or '[Фамилия И.О. исполнителя]' in clean_html_text:
                 critical_placeholders.append('Фамилия И.О. исполнителя')
             
-            # Если есть незаполненные критические поля - возвращаем как вопрос
+            # Если есть незаполненные критические поля - возвращаем как предупреждение
             if critical_placeholders:
                 logger.warning(f"⚠️ Незаполненные критические поля: {critical_placeholders}")
                 return jsonify({
-                    'status': 'question',
-                    'question': f"Договор сгенерирован, но не хватает следующих данных",
+                    'status': 'warning',  # Новый статус - предупреждение
+                    'html': clean_html_text,  # Всё равно показываем HTML
+                    'contract_id': contract_id,  # ID есть - можно скачать
+                    'question': f"⚠️ Договор сгенерирован, но не хватает следующих данных",
                     'missing_fields': critical_placeholders,
                     'conversation': messages + [{'role': 'assistant', 'content': assistant_response}],
-                    'cost': round(cost, 4)
+                    'cost': round(cost, 4),
+                    'model': model,
+                    'tokens': {'input': input_tokens, 'output': output_tokens}
                 })
-
-            save_to_history(contract_type, user_input, clean_html_text, model, cost)
-            
-            # Получаем ID последнего сохранённого договора
-            conn = sqlite3.connect('contracts_history.db')
-            c = conn.cursor()
-            c.execute('SELECT last_insert_rowid()')
-            contract_id = c.fetchone()[0]
-            conn.close()
 
             logger.info("=== УСПЕШНО ===")
             return jsonify({
