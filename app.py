@@ -5,13 +5,10 @@
 НОВОЕ В v2.0:
 ✅ Exponential backoff для 529 ошибок (5 попыток вместо 3)
 ✅ Prompt caching для экономии 90% стоимости
-✅ Rate limiting для защиты от перегрузки
 ✅ Улучшенная обработка ошибок
 """
 
 from flask import Flask, render_template, request, jsonify, send_file, session, redirect, url_for
-from flask_limiter import Limiter
-from flask_limiter.util import get_remote_address
 from functools import wraps
 import anthropic
 from anthropic import APIError
@@ -43,17 +40,6 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
-
-# ============================================================
-# RATE LIMITING
-# ============================================================
-
-limiter = Limiter(
-    app=app,
-    key_func=get_remote_address,
-    default_limits=["100 per hour"],
-    storage_uri="memory://"
-)
 
 API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "sneg2025")
@@ -529,7 +515,6 @@ def clean_html(text):
     return text
 
 @app.route('/api/generate', methods=['POST'])
-@limiter.limit("10 per minute")  # Максимум 10 запросов в минуту
 @login_required
 def generate_contract():
     try:
