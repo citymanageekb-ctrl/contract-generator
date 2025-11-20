@@ -1,12 +1,23 @@
 """
 Сити Менедж Снег - Генератор договоров
-Версия: 1.6 - Универсал, расширенные справочники, экспорт в DOCX
+Версия: 2.0 - С улучшениями производительности
+
+НОВОЕ В v2.0:
+✅ Exponential backoff для 529 ошибок (5 попыток вместо 3)
+✅ Prompt caching для экономии 90% стоимости
+✅ Rate limiting для защиты от перегрузки
+✅ Улучшенная обработка ошибок
 """
 
 from flask import Flask, render_template, request, jsonify, send_file, session, redirect, url_for
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from functools import wraps
 import anthropic
+from anthropic import APIError
 import os
+import time
+import random
 import json
 import base64
 from datetime import datetime
@@ -33,11 +44,143 @@ app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
+# ============================================================
+# RATE LIMITING
+# ============================================================
+
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["100 per hour"],
+    storage_uri="memory://"
+)
+
 API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "sneg2025")
 
 MODEL_HAIKU = "claude-3-5-haiku-20241022"
 MODEL_SONNET = "claude-sonnet-4-20250514"
+
+# ============================================================
+# ANTHROPIC CLIENT С УЛУЧШЕННОЙ КОНФИГУРАЦИЕЙ
+# ============================================================
+
+# Инициализация клиента с увеличенными retry
+anthropic_client = anthropic.Anthropic(
+    api_key=API_KEY,
+    max_retries=5,  # Увеличено с 2 до 5
+    timeout=120.0,  # Увеличено с 60 до 120 секунд
+    default_headers={
+        "anthropic-beta": "prompt-caching-2024-07-31"  # Включаем кеширование
+    }
+)
+
+# ============================================================
+# ФУНКЦИЯ С EXPONENTIAL BACKOFF
+# ============================================================
+
+def call_claude_with_retry(model, system_prompt, messages, use_caching=True, max_attempts=5):
+    """
+    Вызов Claude API с экспоненциальной задержкой при 529 ошибке
+    
+    Args:
+        model: Модель Claude
+        system_prompt: Системный промпт
+        messages: Список сообщений
+        use_caching: Использовать ли кеширование (по умолчанию True)
+        max_attempts: Максимальное количество попыток
+        
+    Returns:
+        response: Ответ от Claude API
+    """
+    
+    # Подготовка system промпта с кешированием
+    if use_caching and isinstance(system_prompt, str):
+        # Разбиваем системный промпт для кеширования
+        system_parts = [
+            {
+                "type": "text",
+                "text": system_prompt,
+                "cache_control": {"type": "ephemeral"}  # Кешировать
+            }
+        ]
+    elif isinstance(system_prompt, list):
+        system_parts = system_prompt
+    else:
+        system_parts = system_prompt
+    
+    for attempt in range(max_attempts):
+        try:
+            logger.info(f"→ Claude API (попытка {attempt + 1}/{max_attempts})")
+            
+            # Делаем запрос
+            response = anthropic_client.messages.create(
+                model=model,
+                max_tokens=16000,
+                system=system_parts,
+                messages=messages,
+                temperature=0.2
+            )
+            
+            # Успешно!
+            logger.info("✅ Claude ответил успешно")
+            
+            # Логируем кеширование
+            usage = response.usage
+            if hasattr(usage, 'cache_creation_input_tokens') and usage.cache_creation_input_tokens > 0:
+                logger.info(f"💾 Кеш создан: {usage.cache_creation_input_tokens} токенов")
+            if hasattr(usage, 'cache_read_input_tokens') and usage.cache_read_input_tokens > 0:
+                saved = usage.cache_read_input_tokens
+                logger.info(f"💰 Кеш использован: {saved} токенов (экономия ~90%)")
+            
+            return response
+            
+        except APIError as e:
+            if e.status_code == 529:  # API Overloaded
+                base_wait = 2 ** attempt
+                jitter = random.uniform(0, 1)
+                wait_time = base_wait + jitter
+                
+                logger.warning(
+                    f"⚠️  API перегружен (529). "
+                    f"Попытка {attempt + 1}/{max_attempts}. "
+                    f"Ожидание {wait_time:.1f} секунд..."
+                )
+                
+                if attempt < max_attempts - 1:
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logger.error("❌ Все попытки исчерпаны. API перегружен.")
+                    raise Exception(
+                        "API временно перегружен. "
+                        "Попробуйте через 5-10 минут или "
+                        "в часы низкой нагрузки (00:00-08:00 MSK)."
+                    )
+                    
+            elif e.status_code == 429:  # Rate limit
+                wait_time = 60
+                logger.warning(f"⚠️  Превышен лимит запросов (429). Ожидание {wait_time} секунд...")
+                
+                if attempt < max_attempts - 1:
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise Exception("Превышен лимит запросов. Попробуйте позже.")
+            else:
+                logger.error(f"❌ Ошибка API: {e.status_code} - {str(e)}")
+                raise
+                
+        except Exception as e:
+            logger.error(f"❌ Неожиданная ошибка: {str(e)}")
+            
+            if attempt < max_attempts - 1:
+                wait_time = 2 ** attempt
+                logger.info(f"Повтор через {wait_time} секунд...")
+                time.sleep(wait_time)
+                continue
+            else:
+                raise
 
 # УЛУЧШЕННЫЙ СИСТЕМНЫЙ ПРОМПТ
 SYSTEM_PROMPT = """Ты - эксперт по составлению юридических договоров в формате HTML.
@@ -386,6 +529,7 @@ def clean_html(text):
     return text
 
 @app.route('/api/generate', methods=['POST'])
+@limiter.limit("10 per minute")  # Максимум 10 запросов в минуту
 @login_required
 def generate_contract():
     try:
@@ -776,15 +920,15 @@ def generate_contract():
         logger.info("→ Claude API")
         
         try:
-            client = anthropic.Anthropic(api_key=API_KEY)
             messages = [{'role': 'user', 'content': content}]
 
-            response = client.messages.create(
+            # НОВЫЙ ВЫЗОВ С RETRY И КЕШИРОВАНИЕМ
+            response = call_claude_with_retry(
                 model=model,
-                max_tokens=16000,
-                system=system_prompt,
+                system_prompt=system_prompt,
                 messages=messages,
-                temperature=0.2
+                use_caching=True,  # Включаем кеширование
+                max_attempts=5
             )
 
             logger.info("← Ответ получен")
