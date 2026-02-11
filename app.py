@@ -866,8 +866,8 @@ def generate_contract():
         except anthropic.AuthenticationError as e:
             return jsonify({'error': f'Ошибка API ключа: {str(e)}'}), 500
         except anthropic.APIError as e:
-    logger.error(f"API Error: {e.status_code} - {e.message}")
-    return jsonify({'error': f'Ошибка API: {str(e)}'}), 500
+             logger.error(f"API Error: {e.status_code} - {e.message}")
+             return jsonify({'error': f'Ошибка API: {str(e)}'}), 500
 
     except Exception as e:
         logger.error(f"ОШИБКА: {e}")
