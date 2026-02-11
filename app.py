@@ -36,8 +36,8 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 APP_PASSWORD = os.getenv("APP_PASSWORD", "sneg2025")
 
-MODEL_HAIKU = "claude-3-5-haiku-20241022"
-MODEL_SONNET = "claude-sonnet-4-20250514"
+MODEL_HAIKU = "claude-haiku-4-5-20251001"
+MODEL_SONNET = "claude-sonnet-4-5-20250929"
 
 # УЛУЧШЕННЫЙ СИСТЕМНЫЙ ПРОМПТ
 SYSTEM_PROMPT = """Ты - эксперт по составлению юридических договоров в формате HTML.
@@ -866,7 +866,8 @@ def generate_contract():
         except anthropic.AuthenticationError as e:
             return jsonify({'error': f'Ошибка API ключа: {str(e)}'}), 500
         except anthropic.APIError as e:
-            return jsonify({'error': f'Ошибка API: {str(e)}'}), 500
+    logger.error(f"API Error: {e.status_code} - {e.message}")
+    return jsonify({'error': f'Ошибка API: {str(e)}'}), 500
 
     except Exception as e:
         logger.error(f"ОШИБКА: {e}")
